@@ -19,9 +19,18 @@ A 3D map of Palomaglade Dr and Palomapark Ln (Lithia, FL) that shows how far set
 
 The house count is 56: 34 on Palomaglade and 22 on Palomapark. Three are opted out by default: 6016, 6032 and 15301. 15301 is past the end of the left run.
 
+## Where to plug in (for households)
+Tap your house on the map, or type your house number in **Find my house** at the top of the panel. The first thing on its card is **Where to plug in**. It shows your box as you face the side with the ports:
+- **IN** is the **right** port. Plug in the cable coming from the house (or island) named under it.
+- **OUT** is the **left** port. Plug in the cable going on to the next box. At the end of a run, leave OUT empty.
+
+The map highlights both cables with **IN from …** and **OUT to …** tags. Opted-out houses have no box, so the cable runs past them to the next box, and the card says so. The answer follows live participation. While the database can't be reached, it uses the default sign-up list and says so.
+
+**Send each household its own link:** open a house and tap **Copy link to this house**. The link ends in the house number, such as `…/#6020`, or the island name, such as `…/#glade-island`. It opens straight to that card.
+
 ## How to update progress (SOP)
 1. Open the site and tap **Edit**. Enter the code, and optionally your name, which appears in Activity.
-2. Tap a house or island on the map, or find it in the **Houses** tab.
+2. Tap a house or island on the map, or find it with **Find my house** or in the **Houses** tab.
 3. Flip **Cable run**, **Box connected** or **Lights/props up**. Add a note if useful (280 characters max).
 4. To change participation, use the **Participating** switch on that house.
 5. Use the **Overview** tab to tick off checklist items, such as "Music streaming website up and running".
@@ -38,7 +47,7 @@ data/neighborhood.json (layout)                 lightshow.nodes / tasks / edit_l
 assets/aerial-2025.jpg (ground)                 (tables not exposed to the API; RLS on, no policies)
 ```
 
-- **`js/`:** `main.js` boots the page, `api.js` calls the database, `scene.js` draws the Three.js map, `ui.js` runs the panels and edit mode, and `model.js` holds the shared run order and progress counts. `fallback.js` shows a message when the 3D map can't load.
+- **`js/`:** `main.js` boots the page, `api.js` calls the database, `scene.js` draws the Three.js map, `ui.js` runs the panels and edit mode, and `model.js` holds the shared run order, progress counts, search and "where to plug in" logic. `fallback.js` shows a message when the 3D map can't load.
 - **`supabase/`:**
   - `schema.sql` creates the schema and the functions the site calls.
   - `seed.sql` loads the starting rows.

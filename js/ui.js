@@ -1,10 +1,12 @@
 /**
- * ui.js — everything outside the 3D view: top bar, Overview / Houses / Activity tabs, the
- * detail card, edit mode (code unlock, optimistic writes), checklist, toasts, failure banner
- * and the phone bottom sheet. Database-sourced strings are only ever set via textContent.
+ * ui.js — everything outside the 3D view: top bar, "Find my house", Overview / Houses / Activity
+ * tabs, the detail card with its "Where to plug in" block, deep links (#6020), edit mode (code
+ * unlock, optimistic writes), checklist, toasts, failure banner and the phone bottom sheet.
+ * Database-sourced strings are only ever set via textContent.
  */
 import {
   STAGES, FIELD_LABELS, RUN_LABELS, nodeStatus, stagesDone, positionText, progress, matchesQuery,
+  findNodes, nodeIdForKey, plugInfo,
 } from './model.js';
 
 const CODE_KEY = 'lightshow.editCode';
@@ -58,6 +60,41 @@ function h(tag, attrs = {}, ...children) {
 }
 
 const $ = (id) => document.getElementById(id);
+
+/** Creates an SVG element from attributes (no markup is parsed). */
+function svg(tag, attrs = {}, ...children) {
+  const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
+  for (const [key, value] of Object.entries(attrs)) if (value != null) el.setAttribute(key, String(value));
+  el.append(...children);
+  return el;
+}
+
+/**
+ * The connection box as seen facing its ports: the OUT socket on the left, IN on the right, each
+ * labelled, with its cable hanging below (the IN arrow points up into the box, the OUT arrow
+ * away from it) and LEFT / RIGHT written beside the cables. With `outEmpty` (end of the run) the
+ * OUT socket is dashed and has no cable.
+ */
+function plugDiagram(outEmpty) {
+  const port = (x, kind, side, empty) => svg('g', { class: `diagram-port diagram-${kind}` },
+    svg('text', { x, y: 27, 'text-anchor': 'middle', class: 'diagram-label' }, kind.toUpperCase()),
+    svg('path', {
+      d: `M${x - 24} 32h48v19h-14v5h-20v-5h-14z`, class: 'diagram-socket', 'stroke-dasharray': empty ? '5 4' : null,
+    }),
+    svg('path', { d: Array.from({ length: 8 }, (_, i) => `M${x - 14 + 4 * i} 35v5`).join(''), class: 'diagram-pins' }),
+    // The side word sits outboard of the cable: LEFT left of the left port, RIGHT right of the right one.
+    svg('text', {
+      x: side === 'left' ? x - 18 : x + 18, y: 77, 'text-anchor': side === 'left' ? 'end' : 'start', class: 'diagram-side',
+    }, side.toUpperCase()),
+    ...(empty ? [] : [
+      svg('path', { d: `M${x} 58V82`, class: 'diagram-cable' }),
+      svg('path', { d: kind === 'in' ? `M${x - 9} 77h18l-9-13z` : `M${x - 9} 64h18l-9 13z`, class: 'diagram-arrow' }),
+    ]));
+  return svg('svg', { class: 'plug-diagram', viewBox: '0 0 320 84', 'aria-hidden': 'true', focusable: 'false' },
+    svg('rect', { x: 6, y: 4, width: 308, height: 53, rx: 12, class: 'diagram-box' }),
+    port(80, 'out', 'left', outEmpty),
+    port(240, 'in', 'right', false));
+}
 
 function storage(kind) {
   return {
@@ -135,6 +172,7 @@ export function createUI({ model, scene, api, refresh }) {
   const activity = createActivity();
   const detail = createDetail();
   const editor = createEditor();
+  initFind();
   initTabs();
   initSceneTools();
   initModeToggle();
@@ -148,17 +186,21 @@ export function createUI({ model, scene, api, refresh }) {
   setInterval(() => { topbar.render(); activity.render(); detail.update(); }, 30000);
   renderAll();
 
+  // Deep links: "#6020" or "#glade-island" opens that card, on load and when the hash changes.
+  window.addEventListener('hashchange', () => select(hashNode(), { from: 'link' }));
+  if (hashNode()) select(hashNode(), { from: 'link' });
+
   // ---------------------------------------------------------------- rendering
 
   /**
-   * Tells the scene which parts of the 3D view the UI covers, so the overview frames the map
-   * between them: the floating overlay (view buttons, offline banner) at the top and, on
-   * phones, the bottom sheet's peek.
+   * Tells the scene which parts of the 3D view the UI covers, so the overview (and a focused
+   * house) is framed between them: the floating overlay (view buttons, offline banner) at the
+   * top and, on phones, the bottom sheet at rest (its peek, or its height while a card shows).
    */
   function syncInset() {
     const overlay = document.querySelector('.scene-overlay').getBoundingClientRect();
     const top = Math.max(0, overlay.bottom - $('scene').getBoundingClientRect().top);
-    scene.setViewInset(SHEET.matches ? sheet.peekHeight() : 0, top);
+    scene.setViewInset(SHEET.matches ? sheet.viewInset() : 0, top);
   }
 
   function renderAll() {
@@ -171,17 +213,67 @@ export function createUI({ model, scene, api, refresh }) {
     const states = new Map();
     for (const id of st.nodes.keys()) states.set(id, effective(id));
     scene.applyState(states);
+    syncScenePlug();
   }
 
+  /**
+   * Opens a node's card (null closes it). `from` is what asked: 'scene' (a tap on the map),
+   * 'list', 'nav' (a neighbor link in the card), 'find' or 'link' (the address bar's hash).
+   */
   function select(id, { from = 'scene' } = {}) {
     const next = id && model.nodes.has(id) ? id : null;
     const prev = st.selected;
     st.selected = next;
     scene.select(next);
+    syncScenePlug();
     if (next) scene.focus(next);
-    if (next !== prev) detail.open(next, { focusTitle: from === 'list' || from === 'nav', previous: prev });
+    if (next !== prev) detail.open(next, { focusTitle: ['list', 'nav', 'find'].includes(from), previous: prev });
     houseList.markSelected(next);
-    if (next && from === 'list' && SHEET.matches && scene.available) sheet.collapse();
+    syncHash(next);
+    // On phones the sheet rises until the whole "Where to plug in" block shows, or on a short
+    // screen at least its ports (a neighbor link leaves a sheet the viewer expanded as is).
+    // Without a 3D map it stays expanded.
+    if (scene.available) sheet.showDetail(next && detail.plugBlock(), { core: '.ports', keepExpanded: from === 'nav' });
+  }
+
+  /**
+   * The selected box's IN and OUT cables, emphasized and labelled on the map. Held back while the
+   * first fetch is in flight (a live opt-out can move them); offline, the default list applies.
+   */
+  function syncScenePlug() {
+    const id = st.selected;
+    const info = id && (hasData() || st.loadError) && plugInfo(model, id, effective);
+    if (info?.kind !== 'box') {
+      scene.showPlug([]);
+      return;
+    }
+    const tag = (nodeId) => model.nodes.get(nodeId).tag;
+    const paths = [{ port: 'in', ids: [info.in.id, ...info.in.passes, id], name: tag(info.in.id) }];
+    if (!info.out.end) paths.push({ port: 'out', ids: [id, ...info.out.passes, info.out.id], name: tag(info.out.id) });
+    scene.showPlug(paths);
+  }
+
+  // ---------------------------------------------------------------- deep links
+
+  /** Node named by the address bar's hash, or null. */
+  function hashNode() {
+    try {
+      return nodeIdForKey(model, decodeURIComponent(window.location.hash.slice(1)));
+    } catch {
+      return null; // malformed escape in the hash
+    }
+  }
+
+  /** Keeps the hash on the open card (#6020) so the address can be shared; adds no history. */
+  function syncHash(id) {
+    const hash = id ? `#${model.nodes.get(id).key}` : '';
+    const { location } = window;
+    if (location.hash !== hash) window.history.replaceState(null, '', hash || location.pathname + location.search);
+  }
+
+  /** Shareable address of a node's card. */
+  function linkTo(node) {
+    return `${window.location.origin}${window.location.pathname}#${node.key}`;
   }
 
   // ---------------------------------------------------------------- top bar + banner
@@ -386,6 +478,93 @@ export function createUI({ model, scene, api, refresh }) {
     };
   }
 
+  // ---------------------------------------------------------------- find my house
+
+  /**
+   * "Find my house": a combobox pinned at the top of the panel. Typing lists matches; arrow keys
+   * + Enter or a tap opens one, Enter on an exact house number jumps straight to it, and Escape
+   * clears the field (a second Escape closes the open card).
+   */
+  function initFind() {
+    const root = $('find');
+    const input = $('find-input');
+    const results = $('find-results');
+    const list = $('find-list');
+    const empty = $('find-empty');
+    let matches = [];
+    let active = -1;
+
+    function setActive(i) {
+      active = i;
+      [...list.children].forEach((el, k) => el.setAttribute('aria-selected', String(k === i)));
+      const option = list.children[i];
+      if (option) {
+        input.setAttribute('aria-activedescendant', option.id);
+        option.scrollIntoView({ block: 'nearest' });
+      } else {
+        input.removeAttribute('aria-activedescendant');
+      }
+    }
+
+    function render() {
+      const q = input.value.trim();
+      matches = findNodes(model, q);
+      list.replaceChildren(...matches.map((node) => h('li', {
+        id: `find-${node.id}`, class: 'find-option', role: 'option', 'aria-selected': 'false', dataset: { id: node.id },
+      },
+      h('span', { class: 'find-main' }, node.kind === 'house' ? node.key : node.tag),
+      h('span', { class: 'find-sub' }, node.kind === 'house' ? node.geo.street : positionText(node)))));
+      list.hidden = !matches.length;
+      empty.textContent = q && !matches.length ? `No house or island matches “${q}”.` : '';
+      empty.hidden = !empty.textContent;
+      results.hidden = !q;
+      input.setAttribute('aria-expanded', String(matches.length > 0));
+      setActive(-1);
+    }
+
+    function close() {
+      results.hidden = true;
+      input.setAttribute('aria-expanded', 'false');
+      setActive(-1);
+    }
+
+    function choose(id) {
+      input.value = '';
+      render();
+      select(id, { from: 'find' });
+    }
+
+    input.addEventListener('input', render);
+    input.addEventListener('focus', () => { if (input.value.trim()) render(); });
+    input.addEventListener('keydown', (e) => {
+      const step = { ArrowDown: 1, ArrowUp: -1 }[e.key];
+      if (step && matches.length) {
+        e.preventDefault();
+        if (results.hidden) render();
+        setActive(active < 0 ? (step > 0 ? 0 : matches.length - 1) : (active + step + matches.length) % matches.length);
+      } else if (e.key === 'Enter') {
+        e.preventDefault();
+        const q = input.value.trim().toLowerCase();
+        const pick = matches[active] ?? (matches[0]?.key === q || matches.length === 1 ? matches[0] : null);
+        if (pick) choose(pick.id);
+      } else if (e.key === 'Escape' && input.value) {
+        e.preventDefault();
+        e.stopPropagation();
+        input.value = '';
+        render();
+      }
+    });
+    // Pressing an option keeps focus in the field; the click then opens it.
+    list.addEventListener('mousedown', (e) => e.preventDefault());
+    list.addEventListener('click', (e) => {
+      const option = e.target.closest('[role="option"]');
+      if (option) choose(option.dataset.id);
+    });
+    root.addEventListener('focusout', (e) => {
+      if (!root.contains(e.relatedTarget)) close();
+    });
+  }
+
   // ---------------------------------------------------------------- activity tab
 
   function createActivity() {
@@ -456,8 +635,9 @@ export function createUI({ model, scene, api, refresh }) {
     }
 
     function build(node) {
-      const v = { node, switches: new Map(), noteDirty: false, noteSaving: false };
+      const v = { node, switches: new Map(), noteDirty: false, noteSaving: false, plugKey: '' };
       v.title = h('h2', { class: 'detail-title', id: 'detail-title', tabindex: '-1' }, node.title);
+      v.plug = h('section', { class: 'plug', 'aria-labelledby': 'plug-title' });
       v.badge = h('p', { class: 'status-badge' });
       v.switchBox = h('div', { class: 'switches', role: 'group', 'aria-label': 'Setup stages' });
       v.hint = h('p', { class: 'hint' }, 'Tap Edit to make changes');
@@ -474,18 +654,18 @@ export function createUI({ model, scene, api, refresh }) {
       v.noteSave = h('button', { type: 'button', class: 'btn btn-gold btn-small', onclick: () => saveNote(node.id) }, 'Save note');
       v.noteEdit = h('div', { class: 'note-edit' }, v.noteInput, h('div', { class: 'note-foot' }, v.counter, v.noteSave));
       v.updated = h('p', { class: 'detail-updated' });
+      v.copyUrl = h('input', { type: 'text', class: 'copy-url', readonly: true, 'aria-label': 'Link to this card' });
+      v.copyFallback = h('p', { class: 'copy-fallback', hidden: true }, 'Copy this link:', v.copyUrl);
 
-      const links = node.links.map((link) => {
-        const target = model.nodes.get(link.id);
-        const text = node.run === 'start' ? `${RUN_LABELS[link.run]}: ${target.tag} →`
-          : link.rel === 'prev' ? `← ${target.tag}` : `${target.tag} →`;
-        const what = node.run === 'start' ? `First stop on the ${RUN_LABELS[link.run].toLowerCase()}`
-          : link.rel === 'prev' ? 'Previous stop' : 'Next stop';
-        return h('button', {
-          type: 'button', class: 'btn btn-ghost btn-small', 'aria-label': `${what}: ${target.title}`,
-          onclick: () => select(link.id, { from: 'nav' }),
-        }, text);
-      });
+      // Neighbors along the run; update() marks the ones without a box, so this row never seems
+      // to contradict the plug block when the cable skips an opted-out house.
+      v.nav = node.links.map((link) => ({
+        link,
+        target: model.nodes.get(link.id),
+        button: h('button', { type: 'button', class: 'btn btn-ghost btn-small', onclick: () => select(link.id, { from: 'nav' }) }),
+        label: '',
+      }));
+      const links = v.nav.map((item) => item.button);
 
       section.replaceChildren(...[
         h('div', { class: 'detail-head' },
@@ -493,17 +673,95 @@ export function createUI({ model, scene, api, refresh }) {
           h('button', {
             type: 'button', class: 'icon-btn', 'aria-label': 'Close details', onclick: () => select(null),
           }, '✕')),
+        v.plug,
         node.kind === 'island'
           ? h('p', { class: 'detail-desc' }, node.geo.name === node.title ? node.geo.desc : `${node.geo.name}. ${node.geo.desc}`)
           : null,
         v.badge,
-        links.length ? h('nav', { class: 'run-nav', 'aria-label': 'Neighbors on the cable run' }, ...links) : null,
+        h('div', { class: 'detail-actions' },
+          links.length ? h('nav', { class: 'run-nav', 'aria-label': 'Neighbors on the cable run' }, ...links) : null,
+          h('button', { type: 'button', class: 'btn btn-ghost btn-small', onclick: () => copyLink(v) },
+            `Copy link to this ${node.kind === 'island' ? 'island' : 'house'}`)),
+        v.copyFallback,
         v.hint,
         v.switchBox,
         h('div', { class: 'note' }, h('h3', { class: 'note-title' }, h('label', { for: 'note-input' }, 'Note')), v.noteText, v.noteEdit),
         v.updated,
       ].filter(Boolean));
       return v;
+    }
+
+    /** A node's name in plug instructions; the start house says that it is the start. */
+    const plugName = (id) => `${model.nodes.get(id).tag}${id === model.homeId ? ' (cable start)' : ''}`;
+
+    /** A neighbor in the plug block: tapping it opens that node's card. */
+    const nodeLink = (id) => h('button', {
+      type: 'button', class: 'node-link', dataset: { id }, onclick: () => select(id, { from: 'nav' }),
+    }, model.nodes.get(id).tag, ...(id === model.homeId ? [' ', h('span', { class: 'node-link-note' }, '(cable start)')] : []));
+
+    /**
+     * One port's column under the diagram (whose OUT / IN and LEFT / RIGHT it sits under): where
+     * its cable goes, and any detours. Screen readers, which skip the diagram, get the port named.
+     */
+    function portInfo(kind, side, link, cable) {
+      const extra = [
+        cable.passes?.length ? `passes ${cable.passes.map((id) => model.nodes.get(id).tag).join(', ')} (no box)` : '',
+        cable.crossing ? 'crosses the street' : '',
+      ].filter(Boolean).join(' · ');
+      return h('div', { class: 'port', dataset: { port: kind } },
+        h('p', { class: 'port-link' }, h('span', { class: 'sr-only' }, `${kind.toUpperCase()}, ${side} port: `), ...link),
+        extra ? h('p', { class: 'port-extra' }, extra) : null);
+    }
+
+    /** "Where to plug in" footnote while the live sign-up list is loading or unreachable. */
+    function plugNote() {
+      if (hasData()) return null;
+      return h('p', { class: 'plug-note', dataset: { state: st.loadError ? 'error' : 'loading' } }, st.loadError
+        ? 'Based on the default sign-up list — live data isn’t available right now.'
+        : 'Checking the live sign-up list…');
+    }
+
+    /** Contents of the "Where to plug in" block for `plugInfo()`'s answer. */
+    function plugContent(info) {
+      const title = h('h3', { class: 'plug-title', id: 'plug-title' }, 'Where to plug in');
+      const note = plugNote();
+      if (info.kind !== 'box') {
+        const says = {
+          start: () => ['Cable start — both runs begin here.'],
+          offrun: () => ['Not on a cable run — no box.'],
+          passby: () => (info.passTo
+            ? ['No box here — the cable passes by from ', nodeLink(info.passFrom), ' to ', nodeLink(info.passTo), '.']
+            : ['No box here — the cable ends at ', nodeLink(info.passFrom), ', before this house.']),
+        }[info.kind]();
+        return [h('div', { class: 'plug-head' }, title), h('p', { class: 'plug-says' }, ...says), note];
+      }
+      const { in: from, out: to } = info;
+      return [
+        h('div', { class: 'plug-head' }, title, h('span', { class: 'plug-facing' }, 'as you face the ports')),
+        plugDiagram(Boolean(to.end)),
+        h('div', { class: 'ports' },
+          portInfo('out', 'left', to.end
+            ? [h('strong', { class: 'port-empty' }, 'Leave empty'), h('span', { class: 'port-what' }, 'end of the run')]
+            : [h('span', { class: 'port-what' }, 'cable to'), nodeLink(to.id)], to),
+          portInfo('in', 'right', [h('span', { class: 'port-what' }, 'cable from'), nodeLink(from.id)], from)),
+        h('p', { class: 'plug-sentence' }, to.end
+          ? `Plug the cable from ${plugName(from.id)} into IN (right). Leave OUT (left) empty — end of the run.`
+          : `Plug the cable from ${plugName(from.id)} into IN (right) and the cable to ${plugName(to.id)} into OUT (left).`),
+        note,
+      ];
+    }
+
+    async function copyLink(v) {
+      const url = linkTo(v.node);
+      try {
+        await navigator.clipboard.writeText(url);
+        toasts.show(`Link to ${v.node.short} copied.`);
+      } catch {
+        // No clipboard here (older browser, insecure page, permission denied): offer it to copy by hand.
+        v.copyUrl.value = url;
+        v.copyFallback.hidden = false;
+        v.copyUrl.select();
+      }
     }
 
     function fieldsFor(node, status) {
@@ -550,10 +808,44 @@ export function createUI({ model, scene, api, refresh }) {
       const { node } = view;
       const s = effective(node.id);
       const status = nodeStatus(s);
+      // Without live state the plug block falls back to the default sign-up list (and says so).
+      const plug = plugInfo(model, node.id, effective);
+      const plugKey = `${JSON.stringify(plug)}|${hasData() ? 'ok' : st.loadError ? 'error' : 'loading'}`;
+      if (plugKey !== view.plugKey) {
+        view.plugKey = plugKey;
+        // A focused neighbor link is rebuilt too: focus its successor (same port and node if
+        // it is still there, else the same port's), or the card title, rather than drop to <body>.
+        const was = view.plug.contains(document.activeElement) ? document.activeElement : null;
+        const port = was?.closest('[data-port]')?.dataset.port;
+        view.plug.replaceChildren(...plugContent(plug).filter(Boolean));
+        if (was) {
+          const links = [...view.plug.querySelectorAll('.node-link')];
+          const next = links.find((el) => el.dataset.id === was.dataset.id && el.closest('[data-port]')?.dataset.port === port)
+            ?? links.find((el) => port && el.closest('[data-port]')?.dataset.port === port)
+            ?? links.find((el) => el.dataset.id === was.dataset.id);
+          (next ?? view.title).focus({ preventScroll: true });
+        }
+      }
+      for (const item of view.nav) {
+        const { link, target, button } = item;
+        // A house the cable passes by (the start house is no box but the start of the cable).
+        const noBox = target.kind === 'house' && target.run !== 'start'
+          && !(effective(target.id)?.participating ?? target.defaultParticipating);
+        const name = `${target.tag}${noBox ? ' (no box)' : ''}`;
+        const text = node.run === 'start' ? `${RUN_LABELS[link.run]}: ${name} →`
+          : link.rel === 'prev' ? `← ${name}` : `${name} →`;
+        if (text === item.label) continue;
+        item.label = text;
+        const what = node.run === 'start' ? `First stop on the ${RUN_LABELS[link.run].toLowerCase()}`
+          : link.rel === 'prev' ? 'Previous stop' : 'Next stop';
+        button.textContent = text;
+        button.setAttribute('aria-label', `${what}: ${target.title}${noBox ? ' (no box, the cable passes by)' : ''}`);
+      }
+
       view.badge.dataset.status = status;
       view.badge.textContent = {
         unknown: 'Status unknown — the tracker database can’t be reached',
-        out: 'Opted out — cable passes by, no box',
+        out: node.run ? 'Opted out — cable passes by, no box' : 'Opted out — no box',
         none: 'Participating · not started',
         partial: `${s ? stagesDone(s) : 0} of 3 stages done`,
         done: 'All 3 stages done',
@@ -585,6 +877,7 @@ export function createUI({ model, scene, api, refresh }) {
     return {
       open,
       update,
+      plugBlock: () => view?.plug ?? null,
       noteState: () => view,
       refreshNote: () => view && updateNote(),
     };
@@ -862,6 +1155,8 @@ export function createUI({ model, scene, api, refresh }) {
       topbar.render();
       overview.render();
       activity.render();
+      detail.update();     // "checking the live list" becomes "based on the default list"
+      syncScenePlug();
     },
   };
 }
@@ -897,14 +1192,21 @@ function createToasts(container) {
 // ------------------------------------------------------------------ phone bottom sheet
 
 /**
- * Bottom sheet for narrow screens: a collapsed "peek" (35% of the viewport) and an expanded
- * state; drag the handle to resize, tap it (or Enter/Space) to toggle. Focusing a text field
- * in the panel expands it. Inert in the side-panel layouts.
+ * Bottom sheet for narrow screens, at one of three heights: the "peek" (35% of the viewport),
+ * "detail" (just tall enough to show a given element, the open card's "Where to plug in" block,
+ * while leaving part of the map visible) and expanded. Drag the handle to move between them;
+ * tap it (or Enter/Space) to expand or go back. Focusing a text field in the panel expands it.
+ * Inert in the side-panel layouts.
  */
 function createSheet(panel, handle, onLayout) {
   const SNAP_PX = 60;
+  const MAP_MIN_PX = 140;    // the detail height never leaves less than this below the top bar
   const TEXT_FIELD = 'input, textarea';
-  let expanded = false;
+  const body = $('panel-body');
+  const overlay = document.querySelector('.scene-overlay');
+  let mode = 'collapsed';    // 'collapsed' | 'detail' | 'expanded'
+  let detailEl = null;
+  let detailCore = null;     // selector of the part of detailEl that must show, room or not
   let drag = null;
   let suppressClick = false;
   // Viewport the peek is sized from. An on-screen keyboard shrinks only the height while a text
@@ -915,21 +1217,46 @@ function createSheet(panel, handle, onLayout) {
   const header = () => document.querySelector('.topbar')?.offsetHeight ?? 0;
   const full = () => Math.max(120, window.innerHeight - header() - 12);
   const peek = () => Math.min(full(), Math.round(base.h * 0.35));
+  /** Map kept clear between the floating overlay (view buttons, offline banner) and the sheet. */
+  const mapKeep = () => Math.min(136, Math.max(96, Math.round(base.h * 0.15)));
+  /**
+   * Height that shows `detailEl` down to its bottom edge (as if scrolled to the top) while
+   * mapKeep() of the map stays clear below the overlay. When not even its core (the plug block's
+   * ports) fits that way, a short screen or the offline banner, the sheet rises to show the
+   * core, as far as MAP_MIN_PX below the top bar.
+   */
+  const detail = () => {
+    if (!detailEl?.isConnected) return peek();
+    const contentTop = panel.getBoundingClientRect().top - body.scrollTop;
+    const need = (el) => el.getBoundingClientRect().bottom - contentTop + 12;
+    const roomy = window.innerHeight - (overlay?.getBoundingClientRect().bottom ?? header()) - mapKeep();
+    const core = detailCore && detailEl.querySelector(detailCore);
+    const cap = Math.max(roomy, core ? Math.min(need(core), full() - MAP_MIN_PX) : 0);
+    return Math.round(Math.max(peek(), Math.min(need(detailEl), cap)));
+  };
+  const heights = { collapsed: peek, detail, expanded: full };
+  const stops = () => (detailEl ? ['collapsed', 'detail', 'expanded'] : ['collapsed', 'expanded']);
 
   function apply() {
     if (!SHEET.matches) {
       panel.style.removeProperty('height');
       return;
     }
-    panel.style.height = `${expanded ? full() : peek()}px`;
-    panel.dataset.sheet = expanded ? 'expanded' : 'collapsed';
-    handle.setAttribute('aria-expanded', String(expanded));
+    panel.style.height = `${heights[mode]()}px`;
+    panel.dataset.sheet = mode;
+    handle.setAttribute('aria-expanded', String(mode === 'expanded'));
   }
 
   function set(next) {
-    expanded = next;
+    mode = next;
     apply();
+    onLayout();
   }
+
+  // The plug block can change size after the sheet fits it (live data arriving, say), and the
+  // overlay grows with the offline banner: refit.
+  const refit = new ResizeObserver(() => { if (mode === 'detail') set('detail'); });
+  if (overlay) refit.observe(overlay);
 
   /** Brings the focused field (and its Save row) into view once the sheet has resized. */
   function revealFocused() {
@@ -955,6 +1282,7 @@ function createSheet(panel, handle, onLayout) {
       panel.style.height = `${height}px`;
     }
   });
+  // A drag past SNAP_PX settles on the height nearest to where it was let go, in its direction.
   const endDrag = () => {
     if (!drag) return;
     panel.classList.remove('is-dragging');
@@ -962,21 +1290,27 @@ function createSheet(panel, handle, onLayout) {
     drag = null;
     if (!moved) return;
     suppressClick = true;
-    const grew = panel.getBoundingClientRect().height - startHeight;
-    set(Math.abs(grew) > SNAP_PX ? grew > 0 : expanded);
+    const now = panel.getBoundingClientRect().height;
+    const grew = now - startHeight;
+    const ahead = stops().filter((m) => (grew > 0 ? heights[m]() > startHeight + 1 : heights[m]() < startHeight - 1));
+    if (Math.abs(grew) <= SNAP_PX || !ahead.length) {
+      apply();
+      return;
+    }
+    set(ahead.reduce((a, b) => (Math.abs(heights[b]() - now) < Math.abs(heights[a]() - now) ? b : a)));
   };
   handle.addEventListener('pointerup', endDrag);
   handle.addEventListener('pointercancel', endDrag);
   // Taps and Enter/Space toggle; the click that ends a drag is ignored.
   handle.addEventListener('click', () => {
     if (suppressClick) suppressClick = false;
-    else set(!expanded);
+    else set(mode === 'expanded' ? (detailEl ? 'detail' : 'collapsed') : 'expanded');
   });
 
   // Typing a note, a checklist item or a search needs the room (and the keyboard takes some).
   panel.addEventListener('focusin', (e) => {
     if (!SHEET.matches || !e.target.matches(TEXT_FIELD)) return;
-    set(true);
+    set('expanded');
     revealFocused();
   });
 
@@ -991,8 +1325,20 @@ function createSheet(panel, handle, onLayout) {
   apply();
 
   return {
-    collapse: () => set(false),
-    expand: () => set(true),
-    peekHeight: peek,
+    expand: () => set('expanded'),
+    /**
+     * Fits the sheet to `el` (the open card's plug block), or at least to its part matching
+     * `core`; null drops back to the peek. With `keepExpanded`, an expanded sheet stays expanded.
+     */
+    showDetail(el, { core = null, keepExpanded = false } = {}) {
+      if (detailEl) refit.unobserve(detailEl);
+      detailEl = el;
+      detailCore = core;
+      if (el) refit.observe(el);
+      if (!el) set(mode === 'detail' ? 'collapsed' : mode);
+      else set(keepExpanded && mode === 'expanded' ? mode : 'detail');
+    },
+    /** Height of the map the sheet covers at rest: the detail height while fitted, else the peek. */
+    viewInset: () => (mode === 'detail' ? detail() : peek()),
   };
 }

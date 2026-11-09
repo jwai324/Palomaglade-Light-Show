@@ -1,6 +1,7 @@
 /**
  * scene.js — Three.js view of the neighborhood: aerial ground, house massing colored by setup
- * status, the two cable runs, connection boxes, themed islands, CSS labels, picking and camera.
+ * status, the two cable runs (with the selected box's IN/OUT cables emphasized), connection
+ * boxes, themed islands, CSS labels, picking and camera.
  *
  * Data coordinates are local meters (x = east, y = north); in three.js X = x, Y = up, Z = −y.
  * Rendering is on demand. The train and home beacon animate at ≤30 fps only while on screen,
@@ -16,6 +17,9 @@ const STORY_H = 3.1;
 const ROOF_OVERHANG = 0.4;
 const CABLE_Y = 0.35;
 const CABLE_R = 0.3;
+const PLUG_R = 0.8;                // the selected box's IN/OUT cables are drawn this thick on top,
+const PLUG_GAP = 1.2;              // stopping this many meters short of each box so it stays visible
+const PLUG_LABEL_M = 5;            // IN/OUT labels sit this far along their cable from the selected box
 const CROSSING_LIFT = 3;
 const DASH_PERIOD = 2.4;
 const RIBBON_W = 2.4;              // translucent ground strip under each cable: keeps runs legible when zoomed out
@@ -52,6 +56,7 @@ const FOCUS_SPAN = { house: 70, island: 55 };   // meters of context kept across
 const FOCUS_MIN_DIST = { house: 110, island: 85 };
 const LABEL_SPAN = 100;            // house numbers show once the view is about this many meters across
 const FLY_MS = 750;
+const OFFSET_MS = 250;             // the view's shift glides as long as the bottom sheet's height transition
 const FRAME_MS = 1000 / 30;
 const IDLE_MS = 60000;
 const CLICK_SLOP_PX = 6;
@@ -65,7 +70,8 @@ const toWorld = ([x, y], h = 0) => new THREE.Vector3(x, h, -y);
 
 /**
  * Creates the scene inside `container`.
- * @returns {{available:boolean, applyState(Map):void, select(id|null):void, focus(id):void,
+ * @returns {{available:boolean, applyState(Map):void, select(id|null):void,
+ *   showPlug(paths:{port:'in'|'out', ids:string[], name:string}[]):void, focus(id):void,
  *   setMode('day'|'night'):void, resetView():void, topView():void,
  *   setViewInset(bottomPx:number, topPx?:number):void, dispose():void}}
  */
@@ -101,8 +107,12 @@ class NeighborhoodScene {
     this.pickables = [];
     this.selectedId = null;
     this.hoverId = null;
+    this.plug = { key: '', meshes: [], labels: [] };   // emphasized IN/OUT cable paths
     this.insetBottom = 0;
     this.insetTop = TOP_INSET_PX;
+    this.viewShift = 0;              // vertical view offset (px) in use; see resize()
+    this.offsetTween = null;
+    this.viewSize = '';
     this.edgeTone = null;            // aerial photo's border color, once loaded
     this.roadMat = null;             // road strips, drawn only if the photo fails to load
     this.homeLabel = null;
@@ -136,6 +146,7 @@ class NeighborhoodScene {
       available: true,
       applyState: (states) => this.applyState(states),
       select: (id) => this.select(id),
+      showPlug: (paths) => this.showPlug(paths),
       focus: (id) => this.focus(id),
       setMode: (mode) => this.setMode(mode),
       resetView: () => this.flyTo(this.overviewPose(INITIAL_PHI)),
@@ -466,12 +477,7 @@ class NeighborhoodScene {
     this.cables = this.data.segments.map((seg) => {
       const pts = seg.path.map((p) => toWorld(p, CABLE_Y));
       const curve = new CablePath(pts, seg.crossing ? CROSSING_LIFT : 0);
-      const length = curve.getLength();
-      const steps = seg.crossing ? 40 : Math.max(4, Math.ceil(length / 0.8));
-      const geo = new THREE.TubeGeometry(curve, steps, CABLE_R, 6, false);
-      const uv = geo.attributes.uv;
-      for (let i = 0; i < uv.count; i++) uv.setX(i, (uv.getX(i) * length) / DASH_PERIOD);
-      const mesh = new THREE.Mesh(geo, this.materials.cablePending[seg.chain]);
+      const mesh = new THREE.Mesh(cableTube(curve, CABLE_R), this.materials.cablePending[seg.chain]);
       this.scene.add(mesh);
       // Street crossings get no ground strip: it would read as cable lying on the road.
       let ribbon = null;
@@ -479,8 +485,9 @@ class NeighborhoodScene {
         ribbon = new THREE.Mesh(ribbonGeometry(pts, RIBBON_W, 0.06), this.materials.ribbonPending[seg.chain]);
         this.scene.add(ribbon);
       }
-      return { seg, mesh, ribbon };
+      return { seg, mesh, ribbon, curve };
     });
+    this.cableByLink = new Map(this.cables.map((c) => [`${c.seg.from}>${c.seg.to}`, c]));
   }
 
   buildHomeBeacon() {
@@ -640,6 +647,7 @@ class NeighborhoodScene {
       mesh.material = (laid ? cableLaid : cablePending)[seg.chain];
       if (ribbon) ribbon.material = (laid ? ribbonLaid : ribbonPending)[seg.chain];
     }
+    this.paintPlug();
     this.rebuildLightLayers();
     this.requestRender();
   }
@@ -804,6 +812,65 @@ class NeighborhoodScene {
     this.requestRender();
   }
 
+  /**
+   * Emphasizes the selected box's cables: each path (chain ids in cable order, e.g. the IN node,
+   * any houses it passes, the box) gets a thicker, brighter tube over the normal one — dashed
+   * while not laid — and a label on its cable a few meters from the box ("IN from 6022"), which
+   * updateLabels() keeps pointing away from the box. An empty list clears them. Rebuilds only
+   * when the paths change.
+   */
+  showPlug(paths) {
+    const key = paths.map((p) => `${p.port}:${p.ids.join('>')}`).join('|');
+    if (key === this.plug.key) return;
+    this.clearPlug();
+    this.plug.key = key;
+    for (const { port, ids, name } of paths) {
+      const cables = ids.slice(1).map((to, i) => this.cableByLink.get(`${ids[i]}>${to}`)).filter(Boolean);
+      if (!cables.length) continue;
+      cables.forEach((cable, i) => {
+        const gap = PLUG_GAP / cable.curve.getLength();
+        const t0 = i === 0 ? gap : 0;
+        const t1 = i === cables.length - 1 ? 1 - gap : 1;
+        const mesh = new THREE.Mesh(cableTube(cable.curve, PLUG_R, t0, t1), this.plugMaterial(cable.seg));
+        mesh.userData.seg = cable.seg;
+        this.plug.meshes.push(mesh);
+        this.scene.add(mesh);
+      });
+      const { curve } = port === 'in' ? cables[cables.length - 1] : cables[0];
+      const along = Math.min(0.5, PLUG_LABEL_M / curve.getLength());
+      const label = makeLabel(`lbl lbl-plug lbl-plug-${port}`, ` ${port === 'in' ? 'from' : 'to'} ${name}`,
+        curve.getPoint(port === 'in' ? 1 - along : along).add(new THREE.Vector3(0, 0.6, 0)));
+      label.userData.box = curve.getPoint(port === 'in' ? 1 : 0);
+      const tag = document.createElement('span');
+      tag.className = 'lbl-port';
+      tag.textContent = port.toUpperCase();
+      label.element.prepend(tag);
+      this.labels.domElement.append(label.element); // measurable before its first render
+      this.plug.labels.push(label);
+      this.scene.add(label);
+    }
+    this.requestRender();
+  }
+
+  /** Plug tubes follow the laid / not-laid state of the cable under them. */
+  plugMaterial(seg) {
+    const { plugLaid, plugPending } = this.materials;
+    return (this.states.get(seg.to)?.cable_run === true ? plugLaid : plugPending)[seg.chain];
+  }
+
+  paintPlug() {
+    for (const mesh of this.plug.meshes) mesh.material = this.plugMaterial(mesh.userData.seg);
+  }
+
+  clearPlug() {
+    for (const mesh of this.plug.meshes) {
+      this.scene.remove(mesh);
+      mesh.geometry.dispose();
+    }
+    for (const label of this.plug.labels) this.scene.remove(label);
+    this.plug = { key: '', meshes: [], labels: [] };
+  }
+
   setHover(id) {
     if (id === this.hoverId) return;
     const prev = this.hoverId;
@@ -822,8 +889,10 @@ class NeighborhoodScene {
     );
     const phi = THREE.MathUtils.clamp(current.phi, 0.35, 0.8);
     const radius = Math.max(FOCUS_MIN_DIST[entry.kind], this.distanceForSpan(FOCUS_SPAN[entry.kind]));
+    // A house is framed together with its box out by the street, where its cables plug in.
+    const target = entry.kind === 'house' ? entry.center.clone().lerp(entry.box.position, 0.5) : entry.center.clone();
     this.flyTo({
-      target: new THREE.Vector3(entry.center.x, 0, entry.center.z),
+      target: target.setY(0),
       spherical: new THREE.Spherical(radius, phi, current.theta),
     });
   }
@@ -844,6 +913,7 @@ class NeighborhoodScene {
    */
   overviewPose(phi) {
     const cam = this.camera.clone();
+    this.setViewShift(this.targetShift(), cam); // as framed once a gliding view shift settles
     const target = this.bounds.fit.getCenter(new THREE.Vector3()).setY(0);
     const dir = new THREE.Vector3().setFromSphericalCoords(1, phi, 0);
     const forward = new THREE.Vector3(0, 0, -1);
@@ -944,7 +1014,7 @@ class NeighborhoodScene {
     }
   }
 
-  /** Pixels of the view covered by UI: the bottom sheet's peek and the overlay at the top. */
+  /** Pixels of the view covered by UI: the bottom sheet at rest and the overlay at the top. */
   setViewInset(bottomPx, topPx = this.insetTop) {
     const bottom = Math.max(0, Math.round(bottomPx || 0));
     const top = Math.max(0, Math.round(topPx || 0));
@@ -954,6 +1024,13 @@ class NeighborhoodScene {
     this.resize();
   }
 
+  /**
+   * Fits the renderer to the container. The view is shifted so that what the camera looks at
+   * (a focused house, the overview's center) sits midway between the overlay and the sheet.
+   * When only the covered area changes while the camera is parked on something (the sheet
+   * rising to fit a card, or dropping as it closes) the shift glides with the sheet's own
+   * transition rather than jumping.
+   */
   resize() {
     const w = this.container.clientWidth;
     const h = this.container.clientHeight;
@@ -961,11 +1038,40 @@ class NeighborhoodScene {
     this.renderer.setSize(w, h, false);
     this.labels.setSize(w, h);
     this.camera.aspect = w / h;
-    if (this.insetBottom) this.camera.setViewOffset(w, h, 0, this.insetBottom / 2, w, h);
-    else this.camera.clearViewOffset();
-    this.camera.updateProjectionMatrix();
+    const shift = this.targetShift();
+    const sameSize = this.viewSize === `${w}x${h}`;
+    this.viewSize = `${w}x${h}`;
+    if (this.userMoved && sameSize && shift !== this.viewShift && !this.reducedMotion.matches) {
+      this.offsetTween = { start: performance.now(), from: this.viewShift, to: shift };
+      this.setViewShift(this.viewShift, this.camera);
+    } else {
+      this.offsetTween = null;
+      this.setViewShift(shift, this.camera);
+    }
     if (!this.userMoved) this.jumpTo(this.overviewPose(INITIAL_PHI));
     this.requestRender();
+  }
+
+  /** View offset (px, down) that centers the view in the strip between overlay and sheet. */
+  targetShift() {
+    return (this.insetBottom - this.insetTop) / 2;
+  }
+
+  setViewShift(shift, camera) {
+    const w = this.container.clientWidth;
+    const h = this.container.clientHeight;
+    if (camera === this.camera) this.viewShift = shift;
+    if (shift) camera.setViewOffset(w, h, 0, shift, w, h);
+    else camera.clearViewOffset();
+    camera.updateProjectionMatrix();
+  }
+
+  stepOffsetTween(now) {
+    const t = this.offsetTween;
+    const k = Math.min(1, Math.max(0, (now - t.start) / OFFSET_MS));
+    const e = k < 0.5 ? 2 * k * k : 1 - (-2 * k + 2) ** 2 / 2;
+    this.setViewShift(t.from + (t.to - t.from) * e, this.camera);
+    if (k >= 1) this.offsetTween = null;
   }
 
   // ------------------------------------------------------------------ render loop
@@ -990,6 +1096,10 @@ class NeighborhoodScene {
     let moving = this.controls.update();
     if (this.tween) {
       this.stepTween(now);
+      moving = true;
+    }
+    if (this.offsetTween) {
+      this.stepOffsetTween(now);
       moving = true;
     }
     this.clampTarget();
@@ -1054,6 +1164,33 @@ class NeighborhoodScene {
       const { label, near, far } = this.homeLabel;
       label.position.copy(cam.distanceTo(near) < maxDist ? near : far);
     }
+    // Each IN/OUT label extends from its anchor away from the box on screen, so the two never
+    // cover each other or the box, whichever way the street runs in the view. While its anchor
+    // shows (between the overlay and the sheet) it is also kept from running off the side or
+    // in under the overlay's buttons and banner or the sheet.
+    const w = this.container.clientWidth;
+    const h = this.container.clientHeight;
+    const top = this.insetTop + 4;
+    const bottom = h - this.insetBottom - 4;
+    for (const label of this.plug.labels) {
+      const a = label.position.clone().project(this.camera);
+      const b = label.userData.box.clone().project(this.camera);
+      const dx = (a.x - b.x) * w;
+      const dy = (b.y - a.y) * h;
+      const m = Math.max(Math.abs(dx), Math.abs(dy)) || 1;
+      let cx = 0.5 - (0.5 * dx) / m;
+      let cy = 0.5 - (0.5 * dy) / m;
+      const { offsetWidth: lw, offsetHeight: lh } = label.element;
+      const ax = ((a.x + 1) / 2) * w;
+      const ay = ((1 - a.y) / 2) * h;
+      if (lw && Math.abs(a.x) <= 1) {
+        cx = (ax - THREE.MathUtils.clamp(ax - cx * lw, 4, Math.max(4, w - 4 - lw))) / lw;
+        if (lh && ay >= this.insetTop && ay <= h - this.insetBottom) {
+          cy = (ay - THREE.MathUtils.clamp(ay - cy * lh, top, Math.max(top, bottom - lh))) / lh;
+        }
+      }
+      label.center.set(cx, cy);
+    }
   }
 
   dispose() {
@@ -1093,6 +1230,8 @@ function createMaterials() {
   const cablePending = {};
   const ribbonLaid = {};
   const ribbonPending = {};
+  const plugLaid = {};
+  const plugPending = {};
   const flat = { transparent: true, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2 };
   for (const [run, color] of Object.entries(RUN_COLORS)) {
     cableLaid[run] = new THREE.MeshStandardMaterial({ color, emissive: color, roughness: 0.4 });
@@ -1102,12 +1241,20 @@ function createMaterials() {
     });
     ribbonLaid[run] = new THREE.MeshBasicMaterial({ ...flat, color });
     ribbonPending[run] = new THREE.MeshBasicMaterial({ ...flat, color, alphaMap: dash, alphaTest: 0.05 });
+    // Unlit and lightened toward white: the selected box's cables stand out in day and night.
+    const hot = new THREE.Color(color).lerp(new THREE.Color(0xffffff), 0.35);
+    plugLaid[run] = new THREE.MeshBasicMaterial({ color: hot });
+    plugPending[run] = new THREE.MeshBasicMaterial({
+      color: hot, transparent: true, alphaMap: dash, alphaTest: 0.3, depthWrite: false,
+    });
   }
   return {
     cableLaid,
     cablePending,
     ribbonLaid,
     ribbonPending,
+    plugLaid,
+    plugPending,
     boxGeo: new THREE.BoxGeometry(BOX_SIZE, BOX_SIZE, BOX_SIZE),
     islandBoxGeo: new THREE.BoxGeometry(ISLAND_BOX_SIZE, ISLAND_BOX_SIZE, ISLAND_BOX_SIZE),
     capsuleGeo: new THREE.CapsuleGeometry(0.55, 1.1, 6, 14),
@@ -1232,6 +1379,34 @@ class CablePath extends THREE.Curve {
     target.y += this.lift * Math.sin(Math.PI * t);
     return target;
   }
+}
+
+/** The part of `curve` between parameters t0 and t1. */
+class CurveSlice extends THREE.Curve {
+  constructor(curve, t0, t1) {
+    super();
+    this.curve = curve;
+    this.t0 = t0;
+    this.t1 = t1;
+  }
+
+  getPoint(t, target) {
+    return this.curve.getPoint(this.t0 + (this.t1 - this.t0) * t, target);
+  }
+}
+
+/**
+ * Tube of `radius` along a cable path, optionally only between parameters t0 and t1. Its u runs
+ * along the whole path in dash periods, so the dashes of a trimmed tube line up with the full one.
+ */
+function cableTube(curve, radius, t0 = 0, t1 = 1) {
+  const length = curve.getLength();
+  const part = t0 > 0 || t1 < 1 ? new CurveSlice(curve, t0, t1) : curve;
+  const steps = curve.lift ? 40 : Math.max(4, Math.ceil(((t1 - t0) * length) / 0.8));
+  const geo = new THREE.TubeGeometry(part, steps, radius, 6, false);
+  const uv = geo.attributes.uv;
+  for (let i = 0; i < uv.count; i++) uv.setX(i, ((t0 + (t1 - t0) * uv.getX(i)) * length) / DASH_PERIOD);
+  return geo;
 }
 
 /** Flat strip of `width` along a polyline at height y; u runs along the length in dash periods. */

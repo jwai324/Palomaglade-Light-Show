@@ -1,7 +1,8 @@
 /**
  * model.js — read-only model derived from data/neighborhood.json.
  * Indexes houses and islands as "nodes", records each node's place on the cable runs,
- * and holds the status/progress helpers shared by the scene and the UI.
+ * and holds the status, progress, search and "where to plug in" helpers shared by the scene
+ * and the UI.
  */
 
 export const STAGES = [
@@ -57,6 +58,7 @@ export function buildModel(data) {
     nodes.set(h.id, {
       ...runFields(),
       id: h.id, kind: 'house', geo: h,
+      key: String(h.num),
       title: `${h.num} ${h.street}`,
       short: `${h.num} ${street}`,
       tag: String(h.num),
@@ -71,6 +73,7 @@ export function buildModel(data) {
     nodes.set(i.id, {
       ...runFields(),
       id: i.id, kind: 'island', geo: i,
+      key: tag.toLowerCase().replace(/\s+/g, '-'),
       title: tag,
       short: tag,
       tag,
@@ -113,6 +116,10 @@ export function buildModel(data) {
     data,
     nodes,
     groups,
+    // Deep-link keys ("6020", "glade-island") → node id.
+    keys: new Map([...nodes.values()].map((node) => [node.key, node.id])),
+    // "from>to" of every chain link that jumps over the street.
+    crossings: new Set(data.segments.filter((s) => s.crossing).map((s) => `${s.from}>${s.to}`)),
     homeId: data.home,
     chainIds,
     cableIds,
@@ -124,6 +131,66 @@ export function buildModel(data) {
 /** True when every whitespace-separated word of `query` occurs somewhere in `text`. */
 export function matchesQuery(text, query) {
   return query.toLowerCase().split(/\s+/).filter(Boolean).every((word) => text.includes(word));
+}
+
+/**
+ * Up to `limit` nodes matching `query` for "Find my house": the exact house number (or island
+ * key) first, then keys starting with the query, then any other match, each in data order.
+ */
+export function findNodes(model, query, limit = 8) {
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+  const rank = (node) => (node.key === q ? 0 : node.key.startsWith(q) ? 1 : 2);
+  return [...model.nodes.values()]
+    .filter((node) => matchesQuery(node.search, q))
+    .sort((a, b) => rank(a) - rank(b))
+    .slice(0, limit);
+}
+
+/** Node id for a deep-link key such as "6020" or "glade-island", or null. */
+export function nodeIdForKey(model, key) {
+  return model.keys.get(String(key).trim().toLowerCase()) ?? null;
+}
+
+/**
+ * Where the Ethernet cable plugs into node `id`'s box. Cable flows outward from the start house
+ * along each chain. A node has a box if it is an island or a participating house (`get(id)` is
+ * the live state; without one the default sign-up list applies); the cable passes by the rest.
+ * Every box takes the cable from the nearest box upstream (or the start) in its IN port and sends
+ * it on to the nearest box downstream from its OUT port. Returns one of
+ *   {kind: 'start'} · {kind: 'offrun'} · {kind: 'passby', passFrom, passTo (null past the last box)}
+ *   {kind: 'box', in: {id, passes, crossing}, out: {id, passes, crossing} | {end: true}}
+ * where `passes` lists the opted-out houses the cable skips (in cable order) and `crossing` is
+ * true when it jumps over the street on the way.
+ */
+export function plugInfo(model, id, get) {
+  const node = model.nodes.get(id);
+  if (!node) return null;
+  if (node.run === 'start') return { kind: 'start' };
+  if (!node.run) return { kind: 'offrun' };
+  const chain = model.data.chains[node.run];
+  const hasBox = (i) => {
+    const n = model.nodes.get(chain[i]);
+    return n.kind === 'island' || (get(n.id)?.participating ?? n.defaultParticipating);
+  };
+  const cable = (from, to) => ({
+    passes: chain.slice(from + 1, to),
+    crossing: chain.slice(from, to).some((a, k) => model.crossings.has(`${a}>${chain[from + k + 1]}`)),
+  });
+
+  const at = node.stop;
+  let up = at - 1;
+  while (up > 0 && !hasBox(up)) up -= 1;
+  let down = at + 1;
+  while (down < chain.length && !hasBox(down)) down += 1;
+  const end = down === chain.length;
+
+  if (!hasBox(at)) return { kind: 'passby', passFrom: chain[up], passTo: end ? null : chain[down] };
+  return {
+    kind: 'box',
+    in: { id: chain[up], ...cable(up, at) },
+    out: end ? { end: true } : { id: chain[down], ...cable(at, down) },
+  };
 }
 
 /** "Right run · stop 7 of 31", "Cable start · both runs begin here", … */

@@ -18,7 +18,7 @@ export function createSceneFallback(container, message = NO_WEBGL_MESSAGE) {
   container.append(msg);
   const noop = () => {};
   return {
-    available: false, applyState: noop, select: noop, focus: noop, setMode: noop,
+    available: false, applyState: noop, select: noop, showPlug: noop, focus: noop, setMode: noop,
     resetView: noop, topView: noop, setViewInset: noop, dispose: () => msg.remove(),
   };
 }

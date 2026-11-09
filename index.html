@@ -52,6 +52,16 @@
         <span class="sheet-grip" aria-hidden="true"></span>
         <span class="sr-only">Expand or collapse the details panel</span>
       </button>
+      <div class="find" id="find">
+        <label class="sr-only" for="find-input">Find my house</label>
+        <input type="search" id="find-input" role="combobox" aria-autocomplete="list" aria-expanded="false"
+          aria-controls="find-list" placeholder="Find my house — type your house number"
+          autocomplete="off" spellcheck="false" enterkeyhint="go">
+        <div class="find-results" id="find-results" hidden>
+          <ul class="find-list" id="find-list" role="listbox" aria-label="Matching houses and islands"></ul>
+          <p class="find-empty" id="find-empty" role="status"></p>
+        </div>
+      </div>
       <div class="panel-body" id="panel-body">
         <section class="detail" id="detail" aria-labelledby="detail-title" hidden></section>
 
