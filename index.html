@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex, nofollow">
+  <meta name="referrer" content="no-referrer">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0b1020">
+  <meta name="description" content="Setup progress for the Palomaglade Dr and Palomapark Ln synchronized Christmas light show.">
+  <title>Palomaglade Light Show — Setup Map</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%230b1020'/%3E%3Cpath fill='%23f5c451' d='M16 4l3.5 8.1 8.8.8-6.7 5.8 2 8.6L16 22.8l-7.6 4.5 2-8.6-6.7-5.8 8.8-.8z'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="css/style.css">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">★</span>
+      <h1>Palomaglade Light Show <span class="brand-sub"><span class="brand-dash">— </span>Setup Map</span></h1>
+    </div>
+    <div class="topbar-status">
+      <p class="progress" id="progress">Cable –/– · Boxes –/– · Lights –/–</p>
+      <p class="freshness" id="freshness" data-state="loading">Loading…</p>
+    </div>
+    <div class="topbar-actions">
+      <button type="button" class="btn btn-ghost" id="mode-toggle" aria-pressed="false">
+        <span class="btn-icon" aria-hidden="true">☾</span><span>Night</span>
+      </button>
+      <span class="editing-chip" id="editing-chip" hidden>
+        <span class="editing-dot" aria-hidden="true"></span>Editing
+        <button type="button" class="btn btn-small" id="lock-btn">Lock</button>
+      </span>
+      <button type="button" class="btn btn-gold" id="edit-btn">Edit</button>
+    </div>
+  </header>
+
+  <main class="layout">
+    <section class="scene-wrap" aria-label="3D map">
+      <div class="scene" id="scene"></div>
+      <div class="scene-overlay">
+        <p class="banner" id="banner" role="status" hidden></p>
+        <div class="scene-tools">
+          <button type="button" class="btn btn-float" id="reset-view">Reset view</button>
+          <button type="button" class="btn btn-float" id="top-view">Top view</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="panel" id="panel" aria-label="Setup details" data-sheet="collapsed">
+      <button type="button" class="sheet-handle" id="sheet-handle" aria-controls="panel-body" aria-expanded="false">
+        <span class="sheet-grip" aria-hidden="true"></span>
+        <span class="sr-only">Expand or collapse the details panel</span>
+      </button>
+      <div class="panel-body" id="panel-body">
+        <section class="detail" id="detail" aria-labelledby="detail-title" hidden></section>
+
+        <div class="tabs-view" id="tabs-view">
+          <div class="tabs" role="tablist" aria-label="Panel sections">
+            <button type="button" role="tab" class="tab" id="tab-overview" aria-controls="pane-overview" aria-selected="true">Overview</button>
+            <button type="button" role="tab" class="tab" id="tab-houses" aria-controls="pane-houses" aria-selected="false" tabindex="-1">Houses</button>
+            <button type="button" role="tab" class="tab" id="tab-activity" aria-controls="pane-activity" aria-selected="false" tabindex="-1">Activity</button>
+          </div>
+
+          <section class="pane" role="tabpanel" id="pane-overview" aria-labelledby="tab-overview">
+            <div class="card">
+              <h2 class="card-title">Progress by run</h2>
+              <div id="run-progress" class="run-progress"></div>
+            </div>
+            <div class="card">
+              <h2 class="card-title">Show checklist</h2>
+              <ul class="tasks" id="tasks"></ul>
+              <p class="empty" id="tasks-empty" hidden>No checklist items yet.</p>
+              <form class="task-add" id="task-add" hidden>
+                <label class="sr-only" for="task-input">New checklist item</label>
+                <input type="text" id="task-input" maxlength="120" placeholder="Add item" autocomplete="off">
+                <button type="submit" class="btn btn-gold">Add</button>
+              </form>
+            </div>
+            <div class="card legend">
+              <h2 class="card-title">Legend</h2>
+              <ul class="legend-list">
+                <li><span class="swatch swatch-house" data-status="done"></span>All 3 stages done</li>
+                <li><span class="swatch swatch-house" data-status="partial"></span>1–2 stages done</li>
+                <li><span class="swatch swatch-house" data-status="none"></span>Participating, not started</li>
+                <li><span class="swatch swatch-house" data-status="out"></span>Opted out — cable passes by, no box</li>
+                <li><span class="swatch swatch-house" data-status="unknown"></span>Status unknown (no data)</li>
+              </ul>
+              <ul class="legend-list">
+                <li><span class="swatch swatch-cable" data-run="right"></span>Right run cable laid</li>
+                <li><span class="swatch swatch-cable is-pending" data-run="right"></span>Right run not laid yet (dashed)</li>
+                <li><span class="swatch swatch-cable" data-run="left"></span>Left run cable laid</li>
+                <li><span class="swatch swatch-cable is-pending" data-run="left"></span>Left run not laid yet (dashed)</li>
+                <li><span class="swatch swatch-arc" aria-hidden="true"></span>Arch = cable jumps over the street</li>
+                <li><span class="swatch swatch-box" data-on="true"></span>Box connected</li>
+                <li><span class="swatch swatch-box" data-on="false"></span>Box not connected</li>
+                <li><span class="swatch swatch-star" aria-hidden="true">★</span>6024 · cable start</li>
+              </ul>
+              <p class="legend-hint">Drag to move · right-drag or two fingers to rotate and tilt · scroll or pinch to zoom · tap a house or island for details.</p>
+            </div>
+          </section>
+
+          <section class="pane" role="tabpanel" id="pane-houses" aria-labelledby="tab-houses" hidden>
+            <div class="search">
+              <label class="sr-only" for="search">Search houses and islands</label>
+              <input type="search" id="search" placeholder="Search address or island" autocomplete="off" spellcheck="false">
+            </div>
+            <div id="house-list" class="house-list"></div>
+            <p class="empty" id="house-empty" hidden>No houses or islands match.</p>
+          </section>
+
+          <section class="pane" role="tabpanel" id="pane-activity" aria-labelledby="tab-activity" hidden>
+            <ol class="activity" id="activity"></ol>
+            <p class="empty" id="activity-empty" hidden>No edits yet.</p>
+          </section>
+        </div>
+      </div>
+    </aside>
+  </main>
+
+  <dialog class="dialog" id="edit-dialog" aria-labelledby="edit-title">
+    <form id="edit-form" novalidate>
+      <h2 id="edit-title">Unlock editing</h2>
+      <p class="dialog-lead">Enter the shared edit code from the show organizer.</p>
+      <label class="field-label" for="code-input">Edit code</label>
+      <input type="text" id="code-input" inputmode="numeric" autocomplete="off" autocapitalize="off" spellcheck="false" maxlength="64">
+      <label class="field-label" for="name-input">Your name <span class="optional">(optional, shown in Activity)</span></label>
+      <input type="text" id="name-input" maxlength="40" autocomplete="off">
+      <p class="form-error" id="edit-error" role="alert"></p>
+      <div class="dialog-actions">
+        <button type="button" class="btn btn-ghost" id="edit-cancel">Cancel</button>
+        <button type="submit" class="btn btn-gold" id="edit-submit">Unlock</button>
+      </div>
+    </form>
+  </dialog>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+</body>
+</html>
