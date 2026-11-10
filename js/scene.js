@@ -1,16 +1,19 @@
 /**
- * scene.js — Three.js view of the neighborhood: aerial ground, house massing colored by setup
- * status, the two cable runs (with the selected box's IN/OUT cables emphasized), connection
- * boxes, themed islands, CSS labels, picking and camera.
+ * scene.js — Three.js view of the neighborhood: aerial ground, house massing colored by wiring
+ * status and dressed in Christmas lights once its lights are up, the two cable runs (with the
+ * selected box's IN/OUT cables emphasized), connection boxes, themed islands, CSS labels, picking
+ * and camera.
  *
  * Data coordinates are local meters (x = east, y = north); in three.js X = x, Y = up, Z = −y.
  * Rendering is on demand. The train and home beacon animate at ≤30 fps only while on screen,
- * the tab is visible, motion is allowed and someone interacted within the last minute.
+ * the tab is visible, motion is allowed and someone interacted within the last minute. At night
+ * the lights of every powered house twinkle in step (alternate bulbs swap a few times a second);
+ * that is a timer, not a frame loop, and it pauses while the tab is hidden.
  */
 import * as THREE from '../vendor/three/three.module.min.js';
 import { OrbitControls } from '../vendor/three/OrbitControls.js';
 import { CSS2DRenderer, CSS2DObject } from '../vendor/three/CSS2DRenderer.js';
-import { nodeStatus, ISLAND_LABELS } from './model.js';
+import { nodeStatus, poweredIds, ISLAND_LABELS } from './model.js';
 import { createSceneFallback as createFallback } from './fallback.js';
 
 const STORY_H = 3.1;
@@ -42,7 +45,7 @@ const MODES = {
   day: {
     sky: 0xb4cbe0, fogNear: 900, fogFar: 2800, aerial: 1, base: 0x34442f,
     hemi: 1.7, hemiSky: 0xeef3ff, hemiGround: 0x4a5a3a, sun: 2.2, sunColor: 0xfff4e0,
-    context: 0x9a9fa8, road: 0x60645f, bulb: 0.8, bulbFine: 0.6, glow: 4, night: false,
+    context: 0x9a9fa8, road: 0x60645f, bulb: 1.0, bulbFine: 0.6, glow: 4, night: false,
   },
   night: {
     sky: 0x060b18, fogNear: 600, fogFar: 2200, aerial: 0.07, base: 0x070b09,
@@ -64,6 +67,11 @@ const TOP_INSET_PX = 56;           // floating view buttons over the map, until 
 const LABEL_RESERVE_PX = 26;       // labels rise this far above their (bottom-centered) anchor
 const MAX_DISTANCE = 1100;         // zoom-out limit, raised when a short viewport needs more to frame everything
 const NIGHT_DIM = 0.4;             // at night, houses with nothing lit yet recede so the lit ones stand out
+const TWINKLE_MS = 650;            // at night, powered house lights swap alternate bulbs this often
+const BULB_SPACING = 0.9;          // meters between bulbs along a roof line
+const TREE_H = 2.4;                // the small lit tree in front of each decorated house
+const TREE_R = 0.9;
+const TREE_SETBACK = 1.8;          // from the front wall to the tree's trunk
 
 /** Data point [x, y] → world vector at height h. */
 const toWorld = ([x, y], h = 0) => new THREE.Vector3(x, h, -y);
@@ -123,6 +131,9 @@ class NeighborhoodScene {
     this.lastAnim = 0;
     this.lastInteraction = performance.now();
     this.reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
+    this.twinklePhase = 0;
+    this.twinkleTimer = 0;
+    this.hasPowered = false;
 
     this.initRenderer();
     this.materials = createMaterials();
@@ -275,10 +286,23 @@ class NeighborhoodScene {
       const label = makeLabel('lbl lbl-house', String(h.num), toWorld(h.center, top + 1.2));
       this.scene.add(group, box, label);
 
+      // Christmas lights (shown once lights are up): eaves, ridge, the front hips and a small
+      // tree out front, on the side of the front yard away from the box.
+      const front = frontOfHouse(h, group.worldToLocal(box.position.clone()));
+      const tree = new THREE.Group();
+      const cone = new THREE.Mesh(materials.houseTreeGeo, materials.tree);
+      cone.position.y = 0.5 + TREE_H / 2;
+      const trunk = new THREE.Mesh(materials.houseTrunkGeo, materials.trunk);
+      trunk.position.y = 0.25;
+      tree.add(cone, trunk);
+      tree.position.copy(front.tree);
+      tree.visible = false;
+      group.add(tree);
+
       const entry = {
-        id: h.id, kind: 'house', group, box, label, bodyMat, roofMat, body, roof, shell: null,
+        id: h.id, kind: 'house', group, box, label, bodyMat, roofMat, body, roof, tree, shell: null,
         center: toWorld(h.center), radius: Math.max(h.w, h.d) / 2 + 3, top,
-        bulbs: rooflineBulbs(h, height, group.matrixWorld),
+        bulbs: houseLights(h, height, rise, front, group.matrixWorld),
       };
       for (const mesh of [body, roof, box]) this.addPickable(mesh, h.id);
       this.entries.set(h.id, entry);
@@ -511,10 +535,18 @@ class NeighborhoodScene {
     };
   }
 
+  /**
+   * House lights are three scene-wide point clouds: the two alternating halves of every powered
+   * house's bulbs (which twinkle against each other at night) and the steady, dimmer bulbs of
+   * houses whose lights are up but not yet powered through the cable.
+   */
   buildLightLayers() {
-    this.roofLights = new THREE.Points(new THREE.BufferGeometry(), this.materials.bulbOn);
-    this.boxGlow = new THREE.Points(new THREE.BufferGeometry(), this.materials.boxGlow);
-    this.scene.add(this.roofLights, this.boxGlow);
+    const { materials } = this;
+    this.roofLights = new THREE.Points(new THREE.BufferGeometry(), materials.bulbOn);
+    this.roofLightsB = new THREE.Points(new THREE.BufferGeometry(), materials.bulbOn);
+    this.roofLightsDim = new THREE.Points(new THREE.BufferGeometry(), materials.bulbDim);
+    this.boxGlow = new THREE.Points(new THREE.BufferGeometry(), materials.boxGlow);
+    this.scene.add(this.roofLights, this.roofLightsB, this.roofLightsDim, this.boxGlow);
   }
 
   buildSelectionRing() {
@@ -621,8 +653,13 @@ class NeighborhoodScene {
     el.addEventListener('pointerleave', this.onPointerLeave);
     el.addEventListener('wheel', this.onWheel, { passive: true });
 
-    this.onVisibility = () => { if (!document.hidden) this.requestRender(); };
+    this.onVisibility = () => {
+      this.scheduleTwinkle();
+      if (!document.hidden) this.requestRender();
+    };
     document.addEventListener('visibilitychange', this.onVisibility);
+    this.onMotionPref = () => this.scheduleTwinkle();
+    this.reducedMotion.addEventListener('change', this.onMotionPref);
   }
 
   observeSize() {
@@ -682,6 +719,7 @@ class NeighborhoodScene {
         if (night && !unlit) mat.emissive.setHex(color).multiplyScalar(0.14);
         else mat.emissive.setHex(0x000000);
       }
+      entry.tree.visible = Boolean(participating && state?.lights_up);
       if (selected || hovered) {
         const shell = this.shellFor(entry);
         shell.visible = true;
@@ -723,20 +761,61 @@ class NeighborhoodScene {
   }
 
   rebuildLightLayers() {
-    const roof = [];
-    const roofColors = [];
+    const powered = poweredIds(this.data, (id) => this.states.get(id));
+    const a = { position: [], color: [] };
+    const b = { position: [], color: [] };
+    const dim = { position: [], color: [] };
     const glow = [];
+    const push = (layer, half) => {
+      layer.position.push(...half.positions);
+      layer.color.push(...half.colors);
+    };
     for (const entry of this.entries.values()) {
       const s = this.states.get(entry.id);
       if (!s?.participating) continue;
       if (entry.kind === 'house' && s.lights_up) {
-        roof.push(...entry.bulbs.positions);
-        roofColors.push(...entry.bulbs.colors);
+        if (powered.has(entry.id)) {
+          push(a, entry.bulbs.a);
+          push(b, entry.bulbs.b);
+        } else {
+          push(dim, entry.bulbs.a);
+          push(dim, entry.bulbs.b);
+        }
       }
       if (s.box_connected) glow.push(entry.box.position.x, entry.box.position.y + 0.5, entry.box.position.z);
     }
-    replaceGeometry(this.roofLights, { position: roof, color: roofColors });
+    replaceGeometry(this.roofLights, a);
+    replaceGeometry(this.roofLightsB, b);
+    replaceGeometry(this.roofLightsDim, dim);
     replaceGeometry(this.boxGlow, { position: glow });
+    this.hasPowered = a.position.length > 0;
+    this.scheduleTwinkle();
+  }
+
+  /** True while the powered houses' lights should blink: night, motion allowed, something to blink. */
+  twinkling() {
+    return MODES[this.mode].night && !this.reducedMotion.matches && this.hasPowered;
+  }
+
+  /** Shows the current twinkle phase: one half of the powered bulbs full, the other faint. */
+  applyTwinkle() {
+    const { bulbOn, bulbTwinkleOff } = this.materials;
+    const blinking = this.twinkling();
+    this.roofLights.material = blinking && this.twinklePhase ? bulbTwinkleOff : bulbOn;
+    this.roofLightsB.material = blinking && !this.twinklePhase ? bulbTwinkleOff : bulbOn;
+  }
+
+  /** (Re)starts the twinkle timer, or stops it when nothing should blink or the tab is hidden. */
+  scheduleTwinkle() {
+    clearTimeout(this.twinkleTimer);
+    this.twinkleTimer = 0;
+    this.applyTwinkle();
+    if (this.disposed || document.hidden || !this.twinkling()) return;
+    this.twinkleTimer = setTimeout(() => {
+      this.twinklePhase ^= 1;
+      this.requestRender();
+      this.scheduleTwinkle();
+    }, TWINKLE_MS);
   }
 
   setMode(mode) {
@@ -756,7 +835,9 @@ class NeighborhoodScene {
 
     materials.bulbOn.size = m.bulb;
     materials.bulbOnFine.size = m.bulbFine;
-    for (const mat of [materials.bulbOn, materials.bulbOnFine]) {
+    materials.bulbTwinkleOff.size = m.bulb * 0.5;
+    materials.bulbDim.size = m.bulb * 0.8;
+    for (const mat of [materials.bulbOn, materials.bulbOnFine, materials.bulbTwinkleOff, materials.bulbDim]) {
       mat.blending = m.night ? THREE.AdditiveBlending : THREE.NormalBlending;
       mat.needsUpdate = true;
     }
@@ -772,6 +853,7 @@ class NeighborhoodScene {
     materials.outline.opacity = m.night ? 0.35 : 0.55;
     this.boxGlow.visible = m.night;
     for (const entry of this.entries.values()) this.paint(entry);
+    this.scheduleTwinkle();
     this.touch();
     this.requestRender();
   }
@@ -1196,6 +1278,7 @@ class NeighborhoodScene {
   dispose() {
     this.disposed = true;
     cancelAnimationFrame(this.frameId);
+    clearTimeout(this.twinkleTimer);
     this.resizeObserver.disconnect();
     const el = this.renderer.domElement;
     el.removeEventListener('pointerdown', this.onPointerDown);
@@ -1207,6 +1290,7 @@ class NeighborhoodScene {
     el.removeEventListener('webglcontextlost', this.onContextLost);
     el.removeEventListener('webglcontextrestored', this.onContextRestored);
     document.removeEventListener('visibilitychange', this.onVisibility);
+    this.reducedMotion.removeEventListener('change', this.onMotionPref);
     this.controls.dispose();
     const seen = new Set();
     const free = (x) => { if (x && !seen.has(x)) { seen.add(x); x.dispose(); } };
@@ -1271,9 +1355,17 @@ function createMaterials() {
     bulbOnFine: new THREE.PointsMaterial({   // dense sets (the lit tree): smaller glow so colors stay distinct
       size: 0.6, map: glow, vertexColors: true, transparent: true, depthWrite: false,
     }),
+    bulbTwinkleOff: new THREE.PointsMaterial({  // the "off" half of a twinkling string: small and faint
+      size: 0.4, map: glow, vertexColors: true, transparent: true, opacity: 0.3, depthWrite: false,
+    }),
+    bulbDim: new THREE.PointsMaterial({         // lights up but not yet powered: steady, dimmer
+      size: 0.65, map: glow, vertexColors: true, transparent: true, opacity: 0.55, depthWrite: false,
+    }),
     bulbOff: new THREE.PointsMaterial({
       size: 0.4, map: glow, color: 0x52525b, transparent: true, depthWrite: false,
     }),
+    houseTreeGeo: new THREE.ConeGeometry(TREE_R, TREE_H, 12),
+    houseTrunkGeo: new THREE.CylinderGeometry(0.12, 0.15, 0.5),
     boxGlow: new THREE.PointsMaterial({
       size: 4, map: glow, color: 0x22c55e, transparent: true, opacity: 0.7,
       depthWrite: false, blending: THREE.AdditiveBlending,
@@ -1488,21 +1580,99 @@ function starGeometry(outer, inner, depth) {
 }
 
 /** World-space bulb positions/colors along a house's eaves. */
-function rooflineBulbs(house, height, matrixWorld) {
-  const hw = house.w / 2 + ROOF_OVERHANG;
-  const hd = house.d / 2 + ROOF_OVERHANG;
-  const rect = [[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]];
+/**
+ * Which side of a house faces the street, from its box's position in the house's local frame
+ * (the box sits at the curb). Returns the outward unit vector of that wall (`dir`, local x or z),
+ * the wall's distance from the center (`half`), and where the small tree stands: in the front
+ * yard, on the side away from the box.
+ */
+function frontOfHouse(house, boxLocal) {
+  const alongX = Math.abs(boxLocal.x) / (house.w / 2) >= Math.abs(boxLocal.z) / (house.d / 2);
+  const dir = alongX
+    ? new THREE.Vector3(Math.sign(boxLocal.x) || 1, 0, 0)
+    : new THREE.Vector3(0, 0, Math.sign(boxLocal.z) || 1);
+  const half = alongX ? house.w / 2 : house.d / 2;
+  const sideLen = alongX ? house.d : house.w;
+  const side = alongX ? new THREE.Vector3(0, 0, 1) : new THREE.Vector3(1, 0, 0);
+  const boxSide = side.dot(boxLocal);
+  const sideOffset = -(Math.sign(boxSide) || 1) * Math.min(sideLen / 2 - TREE_R, sideLen * 0.3);
+  const tree = dir.clone().multiplyScalar(half + ROOF_OVERHANG + TREE_SETBACK).addScaledVector(side, sideOffset);
+  return { dir, half, tree };
+}
+
+/**
+ * World positions and colors of a house's Christmas lights, split into two alternating halves
+ * (`a` and `b`: every other bulb along each string) so the two can twinkle against each other.
+ * Strings: the eaves all around, the roof ridge, the two hips above the front wall, and a spiral
+ * up the small tree in the front yard. Every third house is warm white; the rest are multicolor.
+ */
+function houseLights(house, height, rise, front, matrixWorld) {
+  const ov = ROOF_OVERHANG;
+  const hw = house.w / 2 + ov;
+  const hd = house.d / 2 + ov;
+  const lift = 0.08;
+  const strings = [];
+
+  // Eaves.
+  strings.push(perimeterPoints([[-hw, -hd], [hw, -hd], [hw, hd], [-hw, hd]], BULB_SPACING)
+    .map(([x, z]) => new THREE.Vector3(x, height + lift, z)));
+
+  // Ridge and the front hips. hipRoofGeometry puts the ridge along the longer side.
+  const wide = house.w + 2 * ov >= house.d + 2 * ov;
+  const run = wide ? (hw - hd) : (hd - hw);
+  const ridgeY = height + rise + lift;
+  const r1 = wide ? new THREE.Vector3(-run, ridgeY, 0) : new THREE.Vector3(0, ridgeY, -run);
+  const r2 = wide ? new THREE.Vector3(run, ridgeY, 0) : new THREE.Vector3(0, ridgeY, run);
+  strings.push(lineBulbs(r1, r2, BULB_SPACING));
+  const fx = front.dir.x;
+  const fz = front.dir.z;
+  // The two eave corners of the front wall, each lit up to its nearer ridge end.
+  const corners = fx !== 0
+    ? [new THREE.Vector3(fx * hw, height + lift, -hd), new THREE.Vector3(fx * hw, height + lift, hd)]
+    : [new THREE.Vector3(-hw, height + lift, fz * hd), new THREE.Vector3(hw, height + lift, fz * hd)];
+  for (const corner of corners) {
+    const end = corner.distanceTo(r1) <= corner.distanceTo(r2) ? r1 : r2;
+    strings.push(lineBulbs(corner, end, BULB_SPACING, true));
+  }
+
+  // Tree: a spiral up the cone plus a bulb on top.
+  const tree = [];
+  const turns = 2.5;
+  const n = 14;
+  for (let i = 0; i < n; i++) {
+    const t = i / n;
+    const y = 0.5 + 0.15 + t * (TREE_H - 0.45);
+    const r = TREE_R * (1 - (y - 0.5) / TREE_H) + 0.08;
+    const a = t * turns * Math.PI * 2;
+    tree.push(new THREE.Vector3(front.tree.x + r * Math.cos(a), y, front.tree.z + r * Math.sin(a)));
+  }
+  tree.push(new THREE.Vector3(front.tree.x, 0.5 + TREE_H + 0.1, front.tree.z));
+  strings.push(tree);
+
   const multicolor = house.num % 3 !== 0;
-  const positions = [];
-  const colors = [];
+  const halves = { a: { positions: [], colors: [] }, b: { positions: [], colors: [] } };
   const c = new THREE.Color();
-  perimeterPoints(rect, 0.9).forEach(([x, z], i) => {
-    const p = new THREE.Vector3(x, height + 0.08, z).applyMatrix4(matrixWorld);
-    positions.push(p.x, p.y, p.z);
-    c.setHex(multicolor ? FESTIVE[i % FESTIVE.length] : WARM_WHITE);
-    colors.push(c.r, c.g, c.b);
-  });
-  return { positions, colors };
+  let k = 0;
+  for (const string of strings) {
+    string.forEach((local, i) => {
+      const p = local.clone().applyMatrix4(matrixWorld);
+      const half = i % 2 ? halves.b : halves.a;
+      half.positions.push(p.x, p.y, p.z);
+      c.setHex(multicolor ? FESTIVE[k % FESTIVE.length] : WARM_WHITE);
+      half.colors.push(c.r, c.g, c.b);
+      k += 1;
+    });
+  }
+  return halves;
+}
+
+/** Bulbs every `spacing` from `from` to `to`; `skipFirst` leaves out the start (already lit by another string). */
+function lineBulbs(from, to, spacing, skipFirst = false) {
+  const len = from.distanceTo(to);
+  const n = Math.max(1, Math.round(len / spacing));
+  const out = [];
+  for (let i = skipFirst ? 1 : 0; i <= n; i++) out.push(from.clone().lerp(to, i / n));
+  return out;
 }
 
 function replaceGeometry(points, attrs) {

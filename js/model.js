@@ -33,16 +33,20 @@ export const ISLAND_LABELS = {
   box: 'Park island · end of left run',
 };
 
+/** The two stages that color a house. Lights/props add Christmas lights to it instead. */
+export const WIRING_STAGES = STAGES.filter((s) => s.key !== 'lights_up');
+
 /**
  * Status bucket of a node state: 'unknown' (no DB data), 'out' (opted out),
- * 'none' | 'partial' | 'done' (participating, 0 / 1–2 / 3 stages complete).
+ * 'none' | 'partial' | 'done' (participating, 0 / 1 / 2 wiring stages complete: cable run and
+ * box connected). Lights up does not change the bucket; the scene draws lights for it.
  */
 export function nodeStatus(state) {
   if (!state) return 'unknown';
   if (!state.participating) return 'out';
-  const done = stagesDone(state);
+  const done = wiringDone(state);
   if (done === 0) return 'none';
-  return done === STAGES.length ? 'done' : 'partial';
+  return done === WIRING_STAGES.length ? 'done' : 'partial';
 }
 
 export function stagesDone(state) {
@@ -59,6 +63,50 @@ export function boxText(node) {
   if (n.length === 1) return `Box ${n[0]}`;
   const consecutive = n.every((v, i) => i === 0 || v === n[i - 1] + 1);
   return `Boxes ${consecutive ? `${n[0]}–${n[n.length - 1]}` : n.join(', ')}`;
+}
+
+export function wiringDone(state) {
+  return WIRING_STAGES.reduce((n, s) => n + (state[s.key] ? 1 : 0), 0);
+}
+
+/** Short status line for a node's card, by bucket. */
+export function statusText(node, status, state) {
+  switch (status) {
+    case 'unknown': return 'Status unknown — the tracker database can’t be reached';
+    case 'out': return node.run ? 'Opted out — cable passes by, no box' : 'Opted out — no box';
+    case 'none': return 'Participating · not started';
+    case 'partial': return state.cable_run ? 'Cable run · box not connected yet' : 'Box connected · cable not run yet';
+    default: return state.lights_up ? 'Cable run + box connected · lights up' : 'Cable run + box connected · lights not up yet';
+  }
+}
+
+/**
+ * Ids of the nodes whose Christmas lights have power: the cable runs unbroken from the start
+ * house's connected box out along the chain, through a connected box at every stop that has one
+ * (islands and participating houses), to a connected box at this node. A segment counts as laid
+ * when the node it runs to has cable_run; an unconnected box breaks the chain past it, while the
+ * cable passes opted-out houses untouched. Nothing is powered until the start house's own box is
+ * connected. `get(id)` returns the node state or undefined (unknown nodes break the chain).
+ */
+export function poweredIds(data, get) {
+  const out = new Set();
+  const home = get(data.home);
+  if (home?.participating && home.box_connected) out.add(data.home);
+  const optedOut = new Set(data.opted_out_default);
+  const islands = new Set(data.islands.map((i) => i.id));
+  for (const chain of Object.values(data.chains)) {
+    let live = out.has(data.home);
+    for (const id of chain.slice(1)) {
+      if (!live) break;
+      const s = get(id);
+      if (!s?.cable_run) break;
+      const hasBox = islands.has(id) || (s.participating ?? !optedOut.has(id));
+      if (!hasBox) continue;
+      if (!s.box_connected) break;
+      out.add(id);
+    }
+  }
+  return out;
 }
 
 /** Builds the node index, run positions and list groups from the layout data. */

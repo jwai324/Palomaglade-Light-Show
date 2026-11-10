@@ -5,7 +5,7 @@
  * Database-sourced strings are only ever set via textContent.
  */
 import {
-  STAGES, FIELD_LABELS, RUN_LABELS, nodeStatus, stagesDone, positionText, progress, matchesQuery,
+  STAGES, FIELD_LABELS, RUN_LABELS, nodeStatus, statusText, positionText, progress, matchesQuery,
   findNodes, nodeIdForKey, plugInfo, boxText,
 } from './model.js';
 
@@ -899,13 +899,7 @@ export function createUI({ model, scene, api, refresh }) {
       view.box.hidden = !box;
 
       view.badge.dataset.status = status;
-      view.badge.textContent = {
-        unknown: 'Status unknown — the tracker database can’t be reached',
-        out: node.run ? 'Opted out — cable passes by, no box' : 'Opted out — no box',
-        none: 'Participating · not started',
-        partial: `${s ? stagesDone(s) : 0} of 3 stages done`,
-        done: 'All 3 stages done',
-      }[status];
+      view.badge.textContent = statusText(node, status, s);
 
       syncSwitches(fieldsFor(node, status));
       for (const [field, sw] of view.switches) {

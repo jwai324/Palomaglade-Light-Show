@@ -13,7 +13,9 @@ A 3D map of Palomaglade Dr and Palomapark Ln (Lithia, FL) that shows how far set
 | Blue cable | **Left run**: 6024 → 6026…6038 → front (entrance) island → 6043…6035 → Palomapark outer side 15327…15305 → Palomapark island (26 stops) |
 | Arched cable | Street crossing |
 | Solid vs dashed cable | Laid vs not laid yet. A segment counts as laid when the house or island it runs **to** is marked *Cable run*. |
-| House color | Green = all 3 stages done · amber = 1–2 done · off-white = not started · grey = opted out (cable passes by, no box) |
+| House color | Green = cable run **and** box connected · amber = one of the two · off-white = not started · grey = opted out (cable passes by, no box) |
+| Christmas lights on a house | *Lights/props up* is checked. Bulbs run along the eaves, the roof ridge and the front hips, with a small lit tree in the front yard. Lights/props up never changes the house color. |
+| Twinkling lights (night mode) | The house's lights have power: the cable is laid, and every box is connected, all the way back from this house to 6024's box. Houses with lights up but a gap somewhere upstream show steady, dimmer lights. |
 | Small box at a house | Its connection box (green = connected) |
 | Islands | Front: Star Wars display + control box · Glade: train + lit tree + box · Park: box at the end of the left run |
 
