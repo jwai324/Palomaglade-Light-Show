@@ -5,6 +5,8 @@
  * and the UI.
  */
 
+import { BOX_NUMBERS } from './boxes.js';
+
 export const STAGES = [
   { key: 'cable_run', label: 'Cable run', short: 'Cable' },
   { key: 'box_connected', label: 'Box connected', short: 'Box' },
@@ -47,11 +49,26 @@ export function stagesDone(state) {
   return STAGES.reduce((n, s) => n + (state[s.key] ? 1 : 0), 0);
 }
 
+/**
+ * "Box 12", "Boxes 1–4" (consecutive numbers) or "Boxes 5, 9" for a node's box numbers,
+ * or '' when it has none. Whether the node has a box at all (participation) is the caller's call.
+ */
+export function boxText(node) {
+  const n = node.boxes;
+  if (!n.length) return '';
+  if (n.length === 1) return `Box ${n[0]}`;
+  const consecutive = n.every((v, i) => i === 0 || v === n[i - 1] + 1);
+  return `Boxes ${consecutive ? `${n[0]}–${n[n.length - 1]}` : n.join(', ')}`;
+}
+
 /** Builds the node index, run positions and list groups from the layout data. */
 export function buildModel(data) {
   const optedOut = new Set(data.opted_out_default);
   const nodes = new Map();
   const runFields = () => ({ run: null, stop: 0, runLength: 0, links: [] });
+  const boxes = (id) => BOX_NUMBERS[id] ?? [];
+  // Lets "Find my house" and the Houses search match "box 12" (or just "12").
+  const boxWords = (id) => (BOX_NUMBERS[id] ? ` box ${BOX_NUMBERS[id].join(' ')}` : '');
 
   for (const h of data.houses) {
     const street = STREET_SHORT[h.street] ?? h.street;
@@ -62,7 +79,8 @@ export function buildModel(data) {
       title: `${h.num} ${h.street}`,
       short: `${h.num} ${street}`,
       tag: String(h.num),
-      search: `${h.num} ${h.street} ${street}`.toLowerCase(),
+      boxes: boxes(h.id),
+      search: `${h.num} ${h.street} ${street}${boxWords(h.id)}`.toLowerCase(),
       defaultParticipating: !optedOut.has(h.id),
     });
   }
@@ -77,7 +95,8 @@ export function buildModel(data) {
       title: tag,
       short: tag,
       tag,
-      search: `${tag} ${ISLAND_LABELS[i.theme] ?? ''} ${i.name} ${i.desc} island`.toLowerCase(),
+      boxes: boxes(i.id),
+      search: `${tag} ${ISLAND_LABELS[i.theme] ?? ''} ${i.name} ${i.desc} island${boxWords(i.id)}`.toLowerCase(),
       defaultParticipating: true,
     });
   }
@@ -135,12 +154,15 @@ export function matchesQuery(text, query) {
 
 /**
  * Up to `limit` nodes matching `query` for "Find my house": the exact house number (or island
- * key) first, then keys starting with the query, then any other match, each in data order.
+ * key) first, then the node with that box number ("12" or "box 12"), then keys starting with
+ * the query, then any other match, each in data order.
  */
 export function findNodes(model, query, limit = 8) {
   const q = query.trim().toLowerCase();
   if (!q) return [];
-  const rank = (node) => (node.key === q ? 0 : node.key.startsWith(q) ? 1 : 2);
+  const box = q.match(/^(?:box\s*)?(\d{1,3})$/);
+  const boxNum = box ? Number(box[1]) : null;
+  const rank = (node) => (node.key === q ? 0 : node.boxes.includes(boxNum) ? 1 : node.key.startsWith(q) ? 2 : 3);
   return [...model.nodes.values()]
     .filter((node) => matchesQuery(node.search, q))
     .sort((a, b) => rank(a) - rank(b))

@@ -6,7 +6,7 @@
  */
 import {
   STAGES, FIELD_LABELS, RUN_LABELS, nodeStatus, stagesDone, positionText, progress, matchesQuery,
-  findNodes, nodeIdForKey, plugInfo,
+  findNodes, nodeIdForKey, plugInfo, boxText,
 } from './model.js';
 
 const CODE_KEY = 'lightshow.editCode';
@@ -39,6 +39,7 @@ const WRITE_ERRORS = {
   not_found: 'that item no longer exists.',
   empty_label: 'type a label first.',
   too_many_tasks: 'the checklist is full.',
+  bad_parent: 'sub-items can’t have their own sub-items.',
   bad_field: 'the server rejected that change.',
   bad_value: 'the server rejected that change.',
 };
@@ -159,6 +160,17 @@ export function createUI({ model, scene, api, refresh }) {
     return base && st.pending.has(id) ? { ...base, ...st.pending.get(id) } : base;
   };
   const hasData = () => st.fetchedAt > 0;
+  /** "Box 12" for a node that has a box right now (an island or a participating house), else ''. */
+  const boxOf = (id) => {
+    const node = model.nodes.get(id);
+    const hasBox = node.kind === 'island' || (effective(id)?.participating ?? node.defaultParticipating);
+    return hasBox ? boxText(node) : '';
+  };
+  /** A neighbor's name with its box: "6022 (box 13)", "6024 (cable start · box 12)". */
+  const withBox = (id) => {
+    const notes = [id === model.homeId ? 'cable start' : '', boxOf(id).toLowerCase()].filter(Boolean);
+    return { tag: model.nodes.get(id).tag, note: notes.length ? `(${notes.join(' · ')})` : '' };
+  };
   /** Text for an empty list: `empty` once data is in, else loading / offline. */
   const placeholder = (empty) => (hasData() ? empty : st.loadError ? 'Unavailable while offline.' : 'Loading…');
 
@@ -176,12 +188,13 @@ export function createUI({ model, scene, api, refresh }) {
   initTabs();
   initSceneTools();
   initModeToggle();
+  initInfo();
 
   syncInset();
   // The overlay grows when the offline banner shows; reframe the overview below it.
   new ResizeObserver(() => syncInset()).observe(document.querySelector('.scene-overlay'));
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && st.selected && !$('edit-dialog').open) select(null);
+    if (e.key === 'Escape' && st.selected && !document.querySelector('dialog[open]')) select(null);
   });
   setInterval(() => { topbar.render(); activity.render(); detail.update(); }, 30000);
   renderAll();
@@ -247,7 +260,10 @@ export function createUI({ model, scene, api, refresh }) {
       scene.showPlug([]);
       return;
     }
-    const tag = (nodeId) => model.nodes.get(nodeId).tag;
+    const tag = (nodeId) => {
+      const box = boxOf(nodeId).toLowerCase();
+      return `${model.nodes.get(nodeId).tag}${box ? ` · ${box}` : ''}`;
+    };
     const paths = [{ port: 'in', ids: [info.in.id, ...info.in.passes, id], name: tag(info.in.id) }];
     if (!info.out.end) paths.push({ port: 'out', ids: [id, ...info.out.passes, info.out.id], name: tag(info.out.id) });
     scene.showPlug(paths);
@@ -343,12 +359,30 @@ export function createUI({ model, scene, api, refresh }) {
 
     function renderTasks() {
       const tasks = st.tasks
-        .filter((t) => !st.taskDeleting.has(t.id))
+        .filter((t) => !st.taskDeleting.has(t.id) && !st.taskDeleting.has(t.parent_id))
         .map((t) => (st.taskPending.has(t.id) ? { ...t, done: st.taskPending.get(t.id) } : t));
       const keep = new Set(tasks.map((t) => t.id));
       for (const [id, row] of taskRows) {
         if (!keep.has(id)) { row.el.remove(); taskRows.delete(id); }
       }
+      // Sub-items sit under their parent. One whose parent is missing shows at the top level.
+      const top = tasks.filter((t) => !keep.has(t.parent_id));
+      placeRows(taskList, top, (task, row) => {
+        const subs = tasks.filter((t) => t.parent_id === task.id);
+        placeRows(row.subs, subs);
+        row.subs.hidden = subs.length === 0;
+        row.count.hidden = subs.length === 0;
+        row.count.textContent = `${subs.filter((t) => t.done).length}/${subs.length}`;
+        row.add.hidden = !st.editCode;
+        row.add.setAttribute('aria-label', `Add a sub-item under “${task.label}”`);
+      });
+      const empty = $('tasks-empty');
+      empty.hidden = tasks.length > 0;
+      empty.textContent = placeholder('No checklist items yet.');
+    }
+
+    /** Puts one row per task into `list`, in order, reusing rows by task id. */
+    function placeRows(list, tasks, extra) {
       tasks.forEach((task, i) => {
         let row = taskRows.get(task.id);
         if (!row) {
@@ -361,18 +395,25 @@ export function createUI({ model, scene, api, refresh }) {
         row.del.hidden = !st.editCode;
         row.del.setAttribute('aria-label', `Delete “${task.label}”`);
         row.el.classList.toggle('is-done', Boolean(task.done));
-        if (taskList.children[i] !== row.el) taskList.insertBefore(row.el, taskList.children[i] ?? null);
+        extra?.(task, row);
+        if (list.children[i] !== row.el) list.insertBefore(row.el, list.children[i] ?? null);
       });
-      const empty = $('tasks-empty');
-      empty.hidden = tasks.length > 0;
-      empty.textContent = placeholder('No checklist items yet.');
     }
 
+    /** A checklist row. `count`, `add` and `subs` stay hidden unless the row is a top-level item. */
     function buildTaskRow(id) {
       const box = h('input', { type: 'checkbox', onchange: (e) => toggleTask(id, e.target.checked) });
       const label = h('span', { class: 'task-label' });
+      const count = h('span', { class: 'task-count', hidden: true });
+      const add = h('button', { type: 'button', class: 'icon-btn task-sub-add', hidden: true, onclick: () => addSubTask(id) }, '+');
       const del = h('button', { type: 'button', class: 'icon-btn task-delete', onclick: () => deleteTask(id) }, '✕');
-      return { box, label, del, el: h('li', { class: 'task' }, h('label', { class: 'task-check' }, box, label), del) };
+      const subs = h('ul', { class: 'tasks task-subs', hidden: true });
+      return {
+        box, label, count, add, del, subs,
+        el: h('li', { class: 'task' },
+          h('div', { class: 'task-row' }, h('label', { class: 'task-check' }, box, label, count), add, del),
+          subs),
+      };
     }
 
     return {
@@ -458,12 +499,15 @@ export function createUI({ model, scene, api, refresh }) {
             chip.textContent = `${s ? (on ? '✓' : '○') : '?'} ${stage.short}`;
           });
           const note = s?.note?.trim();
-          row.sub.textContent = out ? 'Opted out — cable passes by' : note ? truncate(note, 60) : '';
+          const box = boxOf(id);
+          row.sub.textContent = [box, out ? 'Opted out — cable passes by' : note ? truncate(note, 60) : '']
+            .filter(Boolean).join(' · ');
           row.sub.hidden = !row.sub.textContent;
           const stages = !s ? 'Status unknown'
             : out ? `Opted out. Cable run: ${yesNo(s.cable_run)}`
               : STAGES.map((stage) => `${stage.label}: ${yesNo(s[stage.key])}`).join('. ');
-          row.button.setAttribute('aria-label', `${row.node.title}. ${positionText(row.node)}. ${stages}.`);
+          row.button.setAttribute('aria-label',
+            `${row.node.title}. ${box ? `${box}. ` : ''}${positionText(row.node)}. ${stages}.`);
         }
       },
       markSelected(id) {
@@ -513,7 +557,8 @@ export function createUI({ model, scene, api, refresh }) {
         id: `find-${node.id}`, class: 'find-option', role: 'option', 'aria-selected': 'false', dataset: { id: node.id },
       },
       h('span', { class: 'find-main' }, node.kind === 'house' ? node.key : node.tag),
-      h('span', { class: 'find-sub' }, node.kind === 'house' ? node.geo.street : positionText(node)))));
+      h('span', { class: 'find-sub' },
+        [node.kind === 'house' ? node.geo.street : positionText(node), boxOf(node.id)].filter(Boolean).join(' · ')))));
       list.hidden = !matches.length;
       empty.textContent = q && !matches.length ? `No house or island matches “${q}”.` : '';
       empty.hidden = !empty.textContent;
@@ -637,6 +682,7 @@ export function createUI({ model, scene, api, refresh }) {
     function build(node) {
       const v = { node, switches: new Map(), noteDirty: false, noteSaving: false, plugKey: '' };
       v.title = h('h2', { class: 'detail-title', id: 'detail-title', tabindex: '-1' }, node.title);
+      v.box = h('p', { class: 'detail-box', hidden: true });
       v.plug = h('section', { class: 'plug', 'aria-labelledby': 'plug-title' });
       v.badge = h('p', { class: 'status-badge' });
       v.switchBox = h('div', { class: 'switches', role: 'group', 'aria-label': 'Setup stages' });
@@ -669,7 +715,7 @@ export function createUI({ model, scene, api, refresh }) {
 
       section.replaceChildren(...[
         h('div', { class: 'detail-head' },
-          h('div', { class: 'detail-heading' }, h('p', { class: 'detail-eyebrow' }, positionText(node)), v.title),
+          h('div', { class: 'detail-heading' }, h('p', { class: 'detail-eyebrow' }, positionText(node)), v.title, v.box),
           h('button', {
             type: 'button', class: 'icon-btn', 'aria-label': 'Close details', onclick: () => select(null),
           }, '✕')),
@@ -691,13 +737,19 @@ export function createUI({ model, scene, api, refresh }) {
       return v;
     }
 
-    /** A node's name in plug instructions; the start house says that it is the start. */
-    const plugName = (id) => `${model.nodes.get(id).tag}${id === model.homeId ? ' (cable start)' : ''}`;
+    /** A node's name in plug instructions, with its box and whether it is the cable start. */
+    const plugName = (id) => {
+      const { tag, note } = withBox(id);
+      return note ? `${tag} ${note}` : tag;
+    };
 
     /** A neighbor in the plug block: tapping it opens that node's card. */
-    const nodeLink = (id) => h('button', {
-      type: 'button', class: 'node-link', dataset: { id }, onclick: () => select(id, { from: 'nav' }),
-    }, model.nodes.get(id).tag, ...(id === model.homeId ? [' ', h('span', { class: 'node-link-note' }, '(cable start)')] : []));
+    const nodeLink = (id) => {
+      const { tag, note } = withBox(id);
+      return h('button', {
+        type: 'button', class: 'node-link', dataset: { id }, onclick: () => select(id, { from: 'nav' }),
+      }, tag, ...(note ? [' ', h('span', { class: 'node-link-note' }, note)] : []));
+    };
 
     /**
      * One port's column under the diagram (whose OUT / IN and LEFT / RIGHT it sits under): where
@@ -841,6 +893,10 @@ export function createUI({ model, scene, api, refresh }) {
         button.textContent = text;
         button.setAttribute('aria-label', `${what}: ${target.title}${noBox ? ' (no box, the cable passes by)' : ''}`);
       }
+
+      const box = boxOf(node.id);
+      view.box.textContent = box;
+      view.box.hidden = !box;
 
       view.badge.dataset.status = status;
       view.badge.textContent = {
@@ -1066,14 +1122,32 @@ export function createUI({ model, scene, api, refresh }) {
     }
   }
 
+  async function addSubTask(parentId) {
+    const parent = st.tasks.find((t) => t.id === parentId);
+    if (!st.editCode || !parent) return;
+    const label = (window.prompt(`New sub-item under “${parent.label}”:`) ?? '').trim().slice(0, 120);
+    if (!label) return;
+    try {
+      const task = await api.addTask(st.editCode, label, st.name, parentId);
+      if (task?.id && !st.tasks.some((t) => t.id === task.id)) st.tasks = [...st.tasks, task];
+      wrote();
+    } catch (err) {
+      writeFailed(err);
+    } finally {
+      renderAll();
+    }
+  }
+
   async function deleteTask(taskId) {
     const task = st.tasks.find((t) => t.id === taskId);
-    if (!st.editCode || !task || !window.confirm(`Delete “${task.label}” from the checklist?`)) return;
+    const subs = st.tasks.filter((t) => t.parent_id === taskId).length;
+    const also = subs ? ` and its ${subs} sub-item${subs === 1 ? '' : 's'}` : '';
+    if (!st.editCode || !task || !window.confirm(`Delete “${task.label}”${also} from the checklist?`)) return;
     st.taskDeleting.add(taskId);
     renderAll();
     try {
       await api.deleteTask(st.editCode, taskId, st.name);
-      st.tasks = st.tasks.filter((t) => t.id !== taskId);
+      st.tasks = st.tasks.filter((t) => t.id !== taskId && t.parent_id !== taskId);
       wrote();
     } catch (err) {
       writeFailed(err);
@@ -1118,6 +1192,14 @@ export function createUI({ model, scene, api, refresh }) {
     }
     $('reset-view').addEventListener('click', () => scene.resetView());
     $('top-view').addEventListener('click', () => scene.topView());
+  }
+
+  /** The "Useful information" dialog: channel list and the SPT-1 cord how-to (static, in index.html). */
+  function initInfo() {
+    const dialog = $('info-dialog');
+    $('info-btn').addEventListener('click', () => dialog.showModal());
+    for (const id of ['info-close', 'info-done']) $(id).addEventListener('click', () => dialog.close());
+    dialog.addEventListener('click', (e) => { if (e.target === dialog) dialog.close(); });
   }
 
   function initModeToggle() {
@@ -1214,7 +1296,8 @@ function createSheet(panel, handle, onLayout) {
   let base = { w: window.innerWidth, h: window.innerHeight };
 
   const typing = () => Boolean(document.activeElement?.matches?.(TEXT_FIELD));
-  const header = () => document.querySelector('.topbar')?.offsetHeight ?? 0;
+  // Everything above the map: the top bar and the "Useful information" strip.
+  const header = () => document.querySelector('.layout')?.getBoundingClientRect().top ?? 0;
   const full = () => Math.max(120, window.innerHeight - header() - 12);
   const peek = () => Math.min(full(), Math.round(base.h * 0.35));
   /** Map kept clear between the floating overlay (view buttons, offline banner) and the sheet. */

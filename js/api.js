@@ -79,8 +79,11 @@ export async function setNote(code, id, note, by) {
   return out.node;
 }
 
-export async function addTask(code, label, by) {
-  const out = await command('lightshow_add_task', { p_code: code, p_label: label, p_by: by });
+/** Adds a checklist item; with `parentId`, as a sub-item of that top-level item. */
+export async function addTask(code, label, by, parentId = null) {
+  const params = { p_code: code, p_label: label, p_by: by };
+  if (parentId) params.p_parent = parentId;
+  const out = await command('lightshow_add_task', params);
   return out.task;
 }
 

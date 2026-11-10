@@ -65,3 +65,28 @@ on conflict (id) do nothing;
 insert into lightshow.tasks (label, sort)
 select 'Music streaming website up and running', 0
 where not exists (select 1 from lightshow.tasks);
+
+-- Island setup items with their sub-items. A parent that already exists (same label, top level)
+-- is skipped along with its sub-items, so this is safe to run again. Sort numbers keep each
+-- parent next to its sub-items.
+with parents (label, sort) as (values
+  ('Set up Glade island', 1),
+  ('Set up Star Wars island', 5),
+  ('Set up Paloma Park island', 9)
+), added as (
+  insert into lightshow.tasks (label, sort)
+  select p.label, p.sort from parents p
+  where not exists (select 1 from lightshow.tasks t where t.label = p.label and t.parent_id is null)
+  returning id, label
+)
+insert into lightshow.tasks (label, sort, parent_id)
+select c.label, c.sort, a.id
+from (values
+  ('Set up Glade island', 'Set up train', 2),
+  ('Set up Glade island', 'Put lights on tree', 3),
+  ('Set up Glade island', 'Put big bulb in tree', 4),
+  ('Set up Star Wars island', 'Put up lightsabers', 6),
+  ('Set up Star Wars island', 'Put up mannequins', 7),
+  ('Set up Star Wars island', 'Put up blow-ups', 8)
+) as c (parent, label, sort)
+join added a on a.label = c.parent;
