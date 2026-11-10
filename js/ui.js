@@ -6,7 +6,7 @@
  */
 import {
   STAGES, FIELD_LABELS, RUN_LABELS, nodeStatus, stagesDone, positionText, progress, matchesQuery,
-  findNodes, nodeIdForKey, plugInfo,
+  findNodes, nodeIdForKey, plugInfo, boxText,
 } from './model.js';
 
 const CODE_KEY = 'lightshow.editCode';
@@ -160,6 +160,17 @@ export function createUI({ model, scene, api, refresh }) {
     return base && st.pending.has(id) ? { ...base, ...st.pending.get(id) } : base;
   };
   const hasData = () => st.fetchedAt > 0;
+  /** "Box 12" for a node that has a box right now (an island or a participating house), else ''. */
+  const boxOf = (id) => {
+    const node = model.nodes.get(id);
+    const hasBox = node.kind === 'island' || (effective(id)?.participating ?? node.defaultParticipating);
+    return hasBox ? boxText(node) : '';
+  };
+  /** A neighbor's name with its box: "6022 (box 13)", "6024 (cable start · box 12)". */
+  const withBox = (id) => {
+    const notes = [id === model.homeId ? 'cable start' : '', boxOf(id).toLowerCase()].filter(Boolean);
+    return { tag: model.nodes.get(id).tag, note: notes.length ? `(${notes.join(' · ')})` : '' };
+  };
   /** Text for an empty list: `empty` once data is in, else loading / offline. */
   const placeholder = (empty) => (hasData() ? empty : st.loadError ? 'Unavailable while offline.' : 'Loading…');
 
@@ -248,7 +259,10 @@ export function createUI({ model, scene, api, refresh }) {
       scene.showPlug([]);
       return;
     }
-    const tag = (nodeId) => model.nodes.get(nodeId).tag;
+    const tag = (nodeId) => {
+      const box = boxOf(nodeId).toLowerCase();
+      return `${model.nodes.get(nodeId).tag}${box ? ` · ${box}` : ''}`;
+    };
     const paths = [{ port: 'in', ids: [info.in.id, ...info.in.passes, id], name: tag(info.in.id) }];
     if (!info.out.end) paths.push({ port: 'out', ids: [id, ...info.out.passes, info.out.id], name: tag(info.out.id) });
     scene.showPlug(paths);
@@ -484,12 +498,15 @@ export function createUI({ model, scene, api, refresh }) {
             chip.textContent = `${s ? (on ? '✓' : '○') : '?'} ${stage.short}`;
           });
           const note = s?.note?.trim();
-          row.sub.textContent = out ? 'Opted out — cable passes by' : note ? truncate(note, 60) : '';
+          const box = boxOf(id);
+          row.sub.textContent = [box, out ? 'Opted out — cable passes by' : note ? truncate(note, 60) : '']
+            .filter(Boolean).join(' · ');
           row.sub.hidden = !row.sub.textContent;
           const stages = !s ? 'Status unknown'
             : out ? `Opted out. Cable run: ${yesNo(s.cable_run)}`
               : STAGES.map((stage) => `${stage.label}: ${yesNo(s[stage.key])}`).join('. ');
-          row.button.setAttribute('aria-label', `${row.node.title}. ${positionText(row.node)}. ${stages}.`);
+          row.button.setAttribute('aria-label',
+            `${row.node.title}. ${box ? `${box}. ` : ''}${positionText(row.node)}. ${stages}.`);
         }
       },
       markSelected(id) {
@@ -539,7 +556,8 @@ export function createUI({ model, scene, api, refresh }) {
         id: `find-${node.id}`, class: 'find-option', role: 'option', 'aria-selected': 'false', dataset: { id: node.id },
       },
       h('span', { class: 'find-main' }, node.kind === 'house' ? node.key : node.tag),
-      h('span', { class: 'find-sub' }, node.kind === 'house' ? node.geo.street : positionText(node)))));
+      h('span', { class: 'find-sub' },
+        [node.kind === 'house' ? node.geo.street : positionText(node), boxOf(node.id)].filter(Boolean).join(' · ')))));
       list.hidden = !matches.length;
       empty.textContent = q && !matches.length ? `No house or island matches “${q}”.` : '';
       empty.hidden = !empty.textContent;
@@ -663,6 +681,7 @@ export function createUI({ model, scene, api, refresh }) {
     function build(node) {
       const v = { node, switches: new Map(), noteDirty: false, noteSaving: false, plugKey: '' };
       v.title = h('h2', { class: 'detail-title', id: 'detail-title', tabindex: '-1' }, node.title);
+      v.box = h('p', { class: 'detail-box', hidden: true });
       v.plug = h('section', { class: 'plug', 'aria-labelledby': 'plug-title' });
       v.badge = h('p', { class: 'status-badge' });
       v.switchBox = h('div', { class: 'switches', role: 'group', 'aria-label': 'Setup stages' });
@@ -695,7 +714,7 @@ export function createUI({ model, scene, api, refresh }) {
 
       section.replaceChildren(...[
         h('div', { class: 'detail-head' },
-          h('div', { class: 'detail-heading' }, h('p', { class: 'detail-eyebrow' }, positionText(node)), v.title),
+          h('div', { class: 'detail-heading' }, h('p', { class: 'detail-eyebrow' }, positionText(node)), v.title, v.box),
           h('button', {
             type: 'button', class: 'icon-btn', 'aria-label': 'Close details', onclick: () => select(null),
           }, '✕')),
@@ -717,13 +736,19 @@ export function createUI({ model, scene, api, refresh }) {
       return v;
     }
 
-    /** A node's name in plug instructions; the start house says that it is the start. */
-    const plugName = (id) => `${model.nodes.get(id).tag}${id === model.homeId ? ' (cable start)' : ''}`;
+    /** A node's name in plug instructions, with its box and whether it is the cable start. */
+    const plugName = (id) => {
+      const { tag, note } = withBox(id);
+      return note ? `${tag} ${note}` : tag;
+    };
 
     /** A neighbor in the plug block: tapping it opens that node's card. */
-    const nodeLink = (id) => h('button', {
-      type: 'button', class: 'node-link', dataset: { id }, onclick: () => select(id, { from: 'nav' }),
-    }, model.nodes.get(id).tag, ...(id === model.homeId ? [' ', h('span', { class: 'node-link-note' }, '(cable start)')] : []));
+    const nodeLink = (id) => {
+      const { tag, note } = withBox(id);
+      return h('button', {
+        type: 'button', class: 'node-link', dataset: { id }, onclick: () => select(id, { from: 'nav' }),
+      }, tag, ...(note ? [' ', h('span', { class: 'node-link-note' }, note)] : []));
+    };
 
     /**
      * One port's column under the diagram (whose OUT / IN and LEFT / RIGHT it sits under): where
@@ -867,6 +892,10 @@ export function createUI({ model, scene, api, refresh }) {
         button.textContent = text;
         button.setAttribute('aria-label', `${what}: ${target.title}${noBox ? ' (no box, the cable passes by)' : ''}`);
       }
+
+      const box = boxOf(node.id);
+      view.box.textContent = box;
+      view.box.hidden = !box;
 
       view.badge.dataset.status = status;
       view.badge.textContent = {

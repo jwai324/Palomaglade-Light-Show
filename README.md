@@ -24,6 +24,8 @@ Tap your house on the map, or type your house number in **Find my house** at the
 - **IN** is the **right** port. Plug in the cable coming from the house (or island) named under it.
 - **OUT** is the **left** port. Plug in the cable going on to the next box. At the end of a run, leave OUT empty.
 
+The card also shows the house's **box number** (the number written on the box, e.g. **Box 52**), and each neighbor's, such as "cable from 6022 (box 13)". Type a box number, such as `37` or `box 37`, in **Find my house** to see where that box goes.
+
 The map highlights both cables with **IN from …** and **OUT to …** tags. Opted-out houses have no box, so the cable runs past them to the next box, and the card says so. The answer follows live participation. While the database can't be reached, it uses the default sign-up list and says so.
 
 **Send each household its own link:** open a house and tap **Copy link to this house**. The link ends in the house number, such as `…/#6020`, or the island name, such as `…/#glade-island`. It opens straight to that card.
@@ -47,7 +49,7 @@ data/neighborhood.json (layout)                 lightshow.nodes / tasks / edit_l
 assets/aerial-2025.jpg (ground)                 (tables not exposed to the API; RLS on, no policies)
 ```
 
-- **`js/`:** `main.js` boots the page, `api.js` calls the database, `scene.js` draws the Three.js map, `ui.js` runs the panels and edit mode, and `model.js` holds the shared run order, progress counts, search and "where to plug in" logic. `fallback.js` shows a message when the 3D map can't load.
+- **`js/`:** `boxes.js` holds the box numbers, `main.js` boots the page, `api.js` calls the database, `scene.js` draws the Three.js map, `ui.js` runs the panels and edit mode, and `model.js` holds the shared run order, progress counts, search and "where to plug in" logic. `fallback.js` shows a message when the 3D map can't load.
 - **`supabase/`:**
   - `schema.sql` creates the schema and the functions the site calls.
   - `seed.sql` loads the starting rows.
@@ -62,6 +64,8 @@ insert into lightshow.settings(key, value)
 values ('edit_code_hash', extensions.crypt('NEW-CODE', extensions.gen_salt('bf', 8)))
 on conflict (key) do update set value = excluded.value;
 ```
+
+**Change a box number:** edit `js/boxes.js` (house or island id → box numbers) and push. No rebuild is needed. Houses without an entry show no box number.
 
 **Reset all progress for a new season:**
 ```sql
