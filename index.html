@@ -35,6 +35,13 @@
     </div>
   </header>
 
+  <div class="info-strip">
+    <button type="button" class="btn btn-ghost btn-small" id="info-btn" aria-haspopup="dialog">
+      <span class="btn-icon" aria-hidden="true">ⓘ</span><span>Useful information</span>
+    </button>
+    <p class="unplug-warning"><span aria-hidden="true">⚠</span> DO NOT UNPLUG BOX</p>
+  </div>
+
   <main class="layout">
     <section class="scene-wrap" aria-label="3D map">
       <div class="scene" id="scene"></div>
@@ -142,6 +149,63 @@
         <button type="submit" class="btn btn-gold" id="edit-submit">Unlock</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog class="dialog dialog-info" id="info-dialog" aria-labelledby="info-title">
+    <div class="info-inner">
+      <div class="info-head">
+        <h2 id="info-title">Useful information</h2>
+        <button type="button" class="icon-btn" id="info-close" aria-label="Close">✕</button>
+      </div>
+
+      <section class="info-section" aria-labelledby="channels-title">
+        <h3 id="channels-title">Light channels</h3>
+        <p>Plug in the corresponding lights to these channels if applicable. There are 3 priority channels. If decorating other parts of your house, use the dedicated channel.</p>
+        <ol class="channels">
+          <li><span class="ch-num">1</span><span class="ch-label">Roof Line (C9)</span></li>
+          <li><span class="ch-num">2</span><span class="ch-label">Roof Icicles <span class="tag-priority">Priority</span></span></li>
+          <li class="is-open"><span class="ch-num">3</span><span class="ch-label">OPEN</span></li>
+          <li><span class="ch-num">4</span><span class="ch-label">Front Tree <span class="tag-priority">Priority</span></span></li>
+          <li class="is-open"><span class="ch-num">5</span><span class="ch-label">OPEN</span></li>
+          <li><span class="ch-num">6</span><span class="ch-label">Bushes Front</span></li>
+          <li class="is-open"><span class="ch-num">7</span><span class="ch-label">OPEN</span></li>
+          <li><span class="ch-num">8</span><span class="ch-label">Mailbox</span></li>
+          <li><span class="ch-num">9</span><span class="ch-label">Candy Canes <span class="tag-priority">Priority</span></span></li>
+          <li class="is-open"><span class="ch-num">10</span><span class="ch-label">OPEN</span></li>
+          <li><span class="ch-num">11</span><span class="ch-label">Big Palm Tree</span></li>
+          <li><span class="ch-num">12</span><span class="ch-label">Small Palm Tree</span></li>
+          <li><span class="ch-num">13</span><span class="ch-label">Lawn lights</span></li>
+          <li><span class="ch-num">14</span><span class="ch-label">Figurine Lights (ex. Reindeer)</span></li>
+          <li><span class="ch-num">15</span><span class="ch-label">Window Frame</span></li>
+          <li><span class="ch-num">16</span><span class="ch-label">Streetlight</span></li>
+        </ol>
+        <p class="info-note">OPEN channels (3, 5, 7, 10): use them for decorations not on this list.</p>
+      </section>
+
+      <section class="info-section" aria-labelledby="spt-title">
+        <h3 id="spt-title">Cheap custom extension cords</h3>
+        <p>SPT-1 wire can be used with vampire plugs bought on Amazon to create cheap custom extension cords, cut to exactly the length you need. SPT-1 is flat two-wire “zip cord.” Sharp teeth inside each vampire plug bite through the wire’s plastic coating and touch the copper inside, so there’s no stripping and no tools.</p>
+        <h4>How to make one</h4>
+        <ol class="steps">
+          <li><strong>Measure and cut.</strong> Measure from the box to where your lights start, add a little slack, and cut the wire straight across. Don’t strip it.</li>
+          <li><strong>Find the ribbed side.</strong> One half of the wire has fine ridges on it. That half is neutral, and it always lines up with the <em>wide</em> prong or slot.</li>
+          <li><strong>Add the plug</strong> (the end that goes into the box). Open the plug, push the wire all the way in with the ribbed half on the wide-prong side, and press it closed firmly. The teeth pierce the coating.</li>
+          <li><strong>Add the socket</strong> (the end your lights plug into). Do the same on the other end. For several lights on one cord, snap inline “pass-through” sockets onto the wire wherever you need them, without cutting it.</li>
+          <li><strong>Check it.</strong> Tug each plug, make sure no copper shows, then plug in and test.</li>
+        </ol>
+        <h4>Buy and use them safely</h4>
+        <ul class="tips">
+          <li>On Amazon, search for “SPT-1 wire” and “SPT-1 vampire plugs” (also sold as slide-on or snap-on plugs). Get plugs labeled <strong>SPT-1</strong>: SPT-2 plugs are made for thicker wire and won’t grip SPT-1 properly.</li>
+          <li>Unplug the cord before adding or moving a plug.</li>
+          <li>Stay under the amp rating printed on the plug’s package. Don’t use these cords for heaters or other high-power devices.</li>
+          <li>Keep connections off the ground and out of puddles.</li>
+        </ul>
+      </section>
+
+      <div class="dialog-actions info-actions">
+        <button type="button" class="btn btn-gold" id="info-done">Close</button>
+      </div>
+    </div>
   </dialog>
 
   <div class="toasts" id="toasts" aria-live="polite"></div>

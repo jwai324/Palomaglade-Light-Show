@@ -188,12 +188,13 @@ export function createUI({ model, scene, api, refresh }) {
   initTabs();
   initSceneTools();
   initModeToggle();
+  initInfo();
 
   syncInset();
   // The overlay grows when the offline banner shows; reframe the overview below it.
   new ResizeObserver(() => syncInset()).observe(document.querySelector('.scene-overlay'));
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && st.selected && !$('edit-dialog').open) select(null);
+    if (e.key === 'Escape' && st.selected && !document.querySelector('dialog[open]')) select(null);
   });
   setInterval(() => { topbar.render(); activity.render(); detail.update(); }, 30000);
   renderAll();
@@ -1193,6 +1194,14 @@ export function createUI({ model, scene, api, refresh }) {
     $('top-view').addEventListener('click', () => scene.topView());
   }
 
+  /** The "Useful information" dialog: channel list and the SPT-1 cord how-to (static, in index.html). */
+  function initInfo() {
+    const dialog = $('info-dialog');
+    $('info-btn').addEventListener('click', () => dialog.showModal());
+    for (const id of ['info-close', 'info-done']) $(id).addEventListener('click', () => dialog.close());
+    dialog.addEventListener('click', (e) => { if (e.target === dialog) dialog.close(); });
+  }
+
   function initModeToggle() {
     const button = $('mode-toggle');
     const apply = (mode) => {
@@ -1287,7 +1296,8 @@ function createSheet(panel, handle, onLayout) {
   let base = { w: window.innerWidth, h: window.innerHeight };
 
   const typing = () => Boolean(document.activeElement?.matches?.(TEXT_FIELD));
-  const header = () => document.querySelector('.topbar')?.offsetHeight ?? 0;
+  // Everything above the map: the top bar and the "Useful information" strip.
+  const header = () => document.querySelector('.layout')?.getBoundingClientRect().top ?? 0;
   const full = () => Math.max(120, window.innerHeight - header() - 12);
   const peek = () => Math.min(full(), Math.round(base.h * 0.35));
   /** Map kept clear between the floating overlay (view buttons, offline banner) and the sheet. */

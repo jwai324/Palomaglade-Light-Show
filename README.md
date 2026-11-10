@@ -28,6 +28,8 @@ The card also shows the house's **box number** (the number written on the box, e
 
 The map highlights both cables with **IN from …** and **OUT to …** tags. Opted-out houses have no box, so the cable runs past them to the next box, and the card says so. The answer follows live participation. While the database can't be reached, it uses the default sign-up list and says so.
 
+**Useful information** (button under the top bar, next to the **DO NOT UNPLUG BOX** warning) shows which lights go on which of the 16 channels (3 are priority) and how to make cheap custom extension cords from SPT-1 wire and vampire plugs. Its text lives in `index.html` (`#info-dialog`).
+
 **Send each household its own link:** open a house and tap **Copy link to this house**. The link ends in the house number, such as `…/#6020`, or the island name, such as `…/#glade-island`. It opens straight to that card.
 
 ## How to update progress (SOP)
