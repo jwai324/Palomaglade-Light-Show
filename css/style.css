@@ -315,6 +315,15 @@ input::placeholder, textarea::placeholder { color: #7c88ad; }
 .swatch-house[data-status="none"] { background: var(--status-none); }
 .swatch-house[data-status="out"] { background: var(--status-out); opacity: 0.7; }
 .swatch-house[data-status="unknown"] { background: var(--status-unknown); }
+.swatch-lights {
+  height: 8px;
+  border-radius: 4px;
+  background: radial-gradient(circle at 3px 50%, #ff4d5e 0 2px, transparent 2.5px) 0 0 / 7px 8px repeat-x,
+    radial-gradient(circle at 3px 50%, #ffd166 0 2px, transparent 2.5px) 7px 0 / 28px 8px repeat-x,
+    radial-gradient(circle at 3px 50%, #3ddc97 0 2px, transparent 2.5px) 14px 0 / 28px 8px repeat-x,
+    radial-gradient(circle at 3px 50%, #4cc9f0 0 2px, transparent 2.5px) 21px 0 / 28px 8px repeat-x;
+  box-shadow: 0 0 6px rgba(255, 225, 168, 0.45);
+}
 .swatch-cable { height: 6px; border-radius: 3px; background: var(--run); }
 .swatch-cable[data-run="right"] { --run: var(--right); }
 .swatch-cable[data-run="left"] { --run: var(--left); }
