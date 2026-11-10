@@ -39,6 +39,7 @@ const WRITE_ERRORS = {
   not_found: 'that item no longer exists.',
   empty_label: 'type a label first.',
   too_many_tasks: 'the checklist is full.',
+  bad_parent: 'sub-items can’t have their own sub-items.',
   bad_field: 'the server rejected that change.',
   bad_value: 'the server rejected that change.',
 };
@@ -343,12 +344,30 @@ export function createUI({ model, scene, api, refresh }) {
 
     function renderTasks() {
       const tasks = st.tasks
-        .filter((t) => !st.taskDeleting.has(t.id))
+        .filter((t) => !st.taskDeleting.has(t.id) && !st.taskDeleting.has(t.parent_id))
         .map((t) => (st.taskPending.has(t.id) ? { ...t, done: st.taskPending.get(t.id) } : t));
       const keep = new Set(tasks.map((t) => t.id));
       for (const [id, row] of taskRows) {
         if (!keep.has(id)) { row.el.remove(); taskRows.delete(id); }
       }
+      // Sub-items sit under their parent. One whose parent is missing shows at the top level.
+      const top = tasks.filter((t) => !keep.has(t.parent_id));
+      placeRows(taskList, top, (task, row) => {
+        const subs = tasks.filter((t) => t.parent_id === task.id);
+        placeRows(row.subs, subs);
+        row.subs.hidden = subs.length === 0;
+        row.count.hidden = subs.length === 0;
+        row.count.textContent = `${subs.filter((t) => t.done).length}/${subs.length}`;
+        row.add.hidden = !st.editCode;
+        row.add.setAttribute('aria-label', `Add a sub-item under “${task.label}”`);
+      });
+      const empty = $('tasks-empty');
+      empty.hidden = tasks.length > 0;
+      empty.textContent = placeholder('No checklist items yet.');
+    }
+
+    /** Puts one row per task into `list`, in order, reusing rows by task id. */
+    function placeRows(list, tasks, extra) {
       tasks.forEach((task, i) => {
         let row = taskRows.get(task.id);
         if (!row) {
@@ -361,18 +380,25 @@ export function createUI({ model, scene, api, refresh }) {
         row.del.hidden = !st.editCode;
         row.del.setAttribute('aria-label', `Delete “${task.label}”`);
         row.el.classList.toggle('is-done', Boolean(task.done));
-        if (taskList.children[i] !== row.el) taskList.insertBefore(row.el, taskList.children[i] ?? null);
+        extra?.(task, row);
+        if (list.children[i] !== row.el) list.insertBefore(row.el, list.children[i] ?? null);
       });
-      const empty = $('tasks-empty');
-      empty.hidden = tasks.length > 0;
-      empty.textContent = placeholder('No checklist items yet.');
     }
 
+    /** A checklist row. `count`, `add` and `subs` stay hidden unless the row is a top-level item. */
     function buildTaskRow(id) {
       const box = h('input', { type: 'checkbox', onchange: (e) => toggleTask(id, e.target.checked) });
       const label = h('span', { class: 'task-label' });
+      const count = h('span', { class: 'task-count', hidden: true });
+      const add = h('button', { type: 'button', class: 'icon-btn task-sub-add', hidden: true, onclick: () => addSubTask(id) }, '+');
       const del = h('button', { type: 'button', class: 'icon-btn task-delete', onclick: () => deleteTask(id) }, '✕');
-      return { box, label, del, el: h('li', { class: 'task' }, h('label', { class: 'task-check' }, box, label), del) };
+      const subs = h('ul', { class: 'tasks task-subs', hidden: true });
+      return {
+        box, label, count, add, del, subs,
+        el: h('li', { class: 'task' },
+          h('div', { class: 'task-row' }, h('label', { class: 'task-check' }, box, label, count), add, del),
+          subs),
+      };
     }
 
     return {
@@ -1066,14 +1092,32 @@ export function createUI({ model, scene, api, refresh }) {
     }
   }
 
+  async function addSubTask(parentId) {
+    const parent = st.tasks.find((t) => t.id === parentId);
+    if (!st.editCode || !parent) return;
+    const label = (window.prompt(`New sub-item under “${parent.label}”:`) ?? '').trim().slice(0, 120);
+    if (!label) return;
+    try {
+      const task = await api.addTask(st.editCode, label, st.name, parentId);
+      if (task?.id && !st.tasks.some((t) => t.id === task.id)) st.tasks = [...st.tasks, task];
+      wrote();
+    } catch (err) {
+      writeFailed(err);
+    } finally {
+      renderAll();
+    }
+  }
+
   async function deleteTask(taskId) {
     const task = st.tasks.find((t) => t.id === taskId);
-    if (!st.editCode || !task || !window.confirm(`Delete “${task.label}” from the checklist?`)) return;
+    const subs = st.tasks.filter((t) => t.parent_id === taskId).length;
+    const also = subs ? ` and its ${subs} sub-item${subs === 1 ? '' : 's'}` : '';
+    if (!st.editCode || !task || !window.confirm(`Delete “${task.label}”${also} from the checklist?`)) return;
     st.taskDeleting.add(taskId);
     renderAll();
     try {
       await api.deleteTask(st.editCode, taskId, st.name);
-      st.tasks = st.tasks.filter((t) => t.id !== taskId);
+      st.tasks = st.tasks.filter((t) => t.id !== taskId && t.parent_id !== taskId);
       wrote();
     } catch (err) {
       writeFailed(err);

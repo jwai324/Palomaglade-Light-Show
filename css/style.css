@@ -276,13 +276,19 @@ input::placeholder, textarea::placeholder { color: #7c88ad; }
 
 /* checklist */
 .tasks { margin: 0; padding: 0; list-style: none; }
-.task { display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--line); }
+.task { border-bottom: 1px solid var(--line); }
 .task:last-child { border-bottom: 0; }
+.task-row { display: flex; align-items: center; gap: 8px; }
 .task-check { flex: 1; display: flex; align-items: center; gap: 12px; min-height: var(--tap); padding: 6px 0; cursor: pointer; }
 .task-check input { flex: none; width: 20px; height: 20px; margin: 0; accent-color: var(--gold); }
 .task-check input:disabled { cursor: not-allowed; }
 .task-label { overflow-wrap: anywhere; }
-.task.is-done .task-label { color: var(--muted); text-decoration: line-through; }
+/* Child combinator: a done parent must not strike through its sub-items. */
+.task.is-done > .task-row .task-label { color: var(--muted); text-decoration: line-through; }
+.task-count { flex: none; margin-left: auto; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+.task-subs { margin: -4px 0 6px; padding-left: 32px; }
+.task-subs .task { border-bottom: 0; }
+.task-subs .task-check { min-height: 40px; padding: 2px 0; font-size: 14px; }
 .task-add { display: flex; gap: 8px; margin-top: 12px; }
 
 /* legend */

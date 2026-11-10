@@ -33,7 +33,7 @@ The map highlights both cables with **IN from …** and **OUT to …** tags. Opt
 2. Tap a house or island on the map, or find it with **Find my house** or in the **Houses** tab.
 3. Flip **Cable run**, **Box connected** or **Lights/props up**. Add a note if useful (280 characters max).
 4. To change participation, use the **Participating** switch on that house.
-5. Use the **Overview** tab to tick off checklist items, such as "Music streaming website up and running".
+5. Use the **Overview** tab to tick off checklist items, such as "Music streaming website up and running". Items can have one level of sub-items (e.g. **Set up Glade island** → *Set up train*); the parent shows how many are done, such as `1/3`, and is ticked on its own. In edit mode, **+** on an item adds a sub-item, and deleting an item deletes its sub-items too.
 6. Tap **Lock** when you're done. Editing also locks when the tab closes.
 
 Eight wrong codes from one device in 15 minutes lock editing for 15 minutes. Sixty wrong codes from everyone combined in 15 minutes do the same.
