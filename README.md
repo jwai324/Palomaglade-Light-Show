@@ -47,22 +47,24 @@ Eight wrong codes from one device in 15 minutes lock editing for 15 minutes. Six
 ## Architecture
 
 ```
-Static site on Vercel (no build step)          Supabase project "tideline", schema "lightshow"
+Static site on Vercel (no build step)          Neon project "palomaglade-light-show", schema "lightshow"
 index.html, css/, js/, vendor/three ── RPC ──▶  public.lightshow_* functions (SECURITY DEFINER)
+            (Neon Data API, anonymous JWT)
 data/neighborhood.json (layout)                 lightshow.nodes / tasks / edit_log / auth_failures / settings
 assets/aerial-2025.jpg (ground)                 (tables not exposed to the API; RLS on, no policies)
 ```
 
 - **`js/`:** `boxes.js` holds the box numbers, `main.js` boots the page, `api.js` calls the database, `scene.js` draws the Three.js map, `ui.js` runs the panels and edit mode, and `model.js` holds the shared run order, progress counts, search and "where to plug in" logic. `fallback.js` shows a message when the 3D map can't load.
-- **`supabase/`:**
+- **`db/`:**
   - `schema.sql` creates the schema and the functions the site calls.
   - `seed.sql` loads the starting rows.
-  - Both are already applied to the `tideline` Supabase project.
+  - Both are already applied to the `palomaglade-light-show` Neon project (database `neondb`).
+- **How the browser reaches the database:** `api.js` fetches a short-lived anonymous token from Neon Auth (`/token/anonymous`), then calls the RPC functions through the Neon Data API. Both URLs are in `js/config.js`, and both hosts are allowed in the `connect-src` Content-Security-Policy in `vercel.json`. If either URL changes, update both files.
 - **`tools/build_data.py`:** regenerates `data/neighborhood.json` and the aerial image from public Hillsborough County GIS data (parcels, address points, road centerlines, 2025 aerials). Owner names are never downloaded.
 
 ## Admin tasks
 
-**Change the edit code** — run in the Supabase SQL editor for `tideline`:
+**Change the edit code** — run in the Neon SQL editor for `palomaglade-light-show`:
 ```sql
 insert into lightshow.settings(key, value)
 values ('edit_code_hash', extensions.crypt('NEW-CODE', extensions.gen_salt('bf', 8)))
@@ -81,7 +83,7 @@ update lightshow.tasks set done = false;
 ```bash
 pip install shapely pyproj && python3 tools/build_data.py --fetch
 ```
-Then run `supabase/seed.sql` again for any new house IDs.
+Then run `db/seed.sql` again for any new house IDs.
 
 **Run locally:**
 ```bash
@@ -92,4 +94,5 @@ Then open http://localhost:8765.
 ## Known limits
 - **House shapes are estimates.** County data has no building outlines, so each house is a box sized from heated square footage and placed at the county address point. Positions are accurate to within a few meters.
 - **The edit code is short.** It is checked on the server and rate-limited, but 4 digits is still guessable over days. A longer code is cheap insurance; see "Change the edit code".
-- **Free-tier pausing.** `tideline` is on Supabase's free plan, which pauses a project after about a week with no activity. If the site shows "showing layout only" after the off-season, restore the project from the Supabase dashboard.
+- **Per-device lockout is best-effort.** The Neon Data API doesn't pass the client IP through, so the "eight wrong codes from one device" limit counts against a random id the browser stores (`X-Client-Id`). Clearing site data resets it. The sixty-per-15-minutes global limit is unaffected and is what actually caps guessing.
+- **Cold starts.** Neon's free plan scales the database to zero when idle. It never pauses the project, but the first load after a quiet spell can take a second or two longer.

@@ -8,7 +8,7 @@
       "headers": [
         {
           "key": "Content-Security-Policy",
-          "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://heaficaxneggnsayrrzs.supabase.co; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
+          "value": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://ep-aged-rice-bbcebvsj.apirest.c-15.us-east-1.aws.neon.tech https://ep-aged-rice-bbcebvsj.neonauth.c-15.us-east-1.aws.neon.tech; worker-src 'self' blob:; frame-ancestors 'none'; base-uri 'none'; form-action 'none'"
         },
         {
           "key": "X-Robots-Tag",

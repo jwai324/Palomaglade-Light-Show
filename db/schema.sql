@@ -1,12 +1,12 @@
--- Palomaglade Light Show tracker — Supabase schema
+-- Palomaglade Light Show tracker — Postgres schema (Neon project "palomaglade-light-show")
 --
--- Lives inside an existing Supabase project, isolated in its own schema:
---   * Tables sit in schema `lightshow`, which the Data API does NOT expose.
+-- The browser talks to Postgres through the Neon Data API (PostgREST-compatible):
+--   * Tables sit in schema `lightshow`, which the Data API does NOT expose (only `public`).
 --   * The browser can only call the public.lightshow_* functions below (SECURITY DEFINER).
 --   * Every write function checks the edit code server-side; the code is stored only as a
 --     bcrypt hash in lightshow.settings and never ships to the browser.
 --
--- Set or change the edit code (run in the Supabase SQL editor; do not commit the code):
+-- Set or change the edit code (run in the Neon SQL editor; do not commit the code):
 --   insert into lightshow.settings(key, value)
 --   values ('edit_code_hash', extensions.crypt('NEW-CODE', extensions.gen_salt('bf', 8)))
 --   on conflict (key) do update set value = excluded.value;
@@ -14,11 +14,12 @@
 -- Brute-force protection: 8 wrong codes per client per 15 min, and 60 wrong codes total
 -- per 15 min across everyone, lock editing until the window passes.
 
+create schema if not exists extensions;
 create extension if not exists pgcrypto with schema extensions;
 
 create schema if not exists lightshow;
 revoke all on schema lightshow from public;
-revoke all on schema lightshow from anon, authenticated;
+revoke all on schema lightshow from anonymous, authenticated;
 
 create table if not exists lightshow.nodes (
   id            text primary key check (id ~ '^(G[0-9]{4}|P[0-9]{5}|I-(front|glade|park))$'),
@@ -80,7 +81,11 @@ alter table lightshow.settings      enable row level security;
 
 -- ---------------------------------------------------------------- internal helpers
 
--- Hashed client identifier (IP from the API gateway headers). Never stores the raw IP.
+-- Hashed client identifier for the per-client lockout. Never stores the raw value.
+-- The Neon Data API forwards request headers but adds no client-IP header, so the browser
+-- sends a random per-device id (X-Client-Id, see js/api.js). It is spoofable, like any
+-- client-supplied value: the per-client limit keeps one typo-prone device from locking
+-- everyone out, while the global limit below is what actually caps brute force.
 create or replace function lightshow._client()
 returns text
 language plpgsql
@@ -99,6 +104,7 @@ begin
   ip := coalesce(h ->> 'cf-connecting-ip',
                  nullif(trim(split_part(coalesce(h ->> 'x-forwarded-for', ''), ',', 1)), ''),
                  h ->> 'x-real-ip',
+                 nullif(left(h ->> 'x-client-id', 64), ''),
                  'unknown');
   return encode(extensions.digest(ip, 'sha256'), 'hex');
 end;
@@ -161,11 +167,11 @@ as $$
   select 'task:' || coalesce((select p.label || ' › ' from lightshow.tasks p where p.id = t.parent_id), '') || t.label
 $$;
 
-revoke all on function lightshow._client()        from public, anon, authenticated;
-revoke all on function lightshow._check(text)     from public, anon, authenticated;
-revoke all on function lightshow._by(text)        from public, anon, authenticated;
-revoke all on function lightshow._node_json(lightshow.nodes) from public, anon, authenticated;
-revoke all on function lightshow._task_target(lightshow.tasks) from public, anon, authenticated;
+revoke all on function lightshow._client()        from public, anonymous, authenticated;
+revoke all on function lightshow._check(text)     from public, anonymous, authenticated;
+revoke all on function lightshow._by(text)        from public, anonymous, authenticated;
+revoke all on function lightshow._node_json(lightshow.nodes) from public, anonymous, authenticated;
+revoke all on function lightshow._task_target(lightshow.tasks) from public, anonymous, authenticated;
 
 -- ---------------------------------------------------------------- public API (RPC)
 
@@ -355,13 +361,13 @@ revoke all on function public.lightshow_add_task(text, text, text, uuid)        
 revoke all on function public.lightshow_set_task(text, uuid, boolean, text)       from public;
 revoke all on function public.lightshow_delete_task(text, uuid, text)             from public;
 
-grant execute on function public.lightshow_state()                                   to anon, authenticated;
-grant execute on function public.lightshow_check_code(text)                          to anon, authenticated;
-grant execute on function public.lightshow_set_stage(text, text, text, boolean, text) to anon, authenticated;
-grant execute on function public.lightshow_set_note(text, text, text, text)          to anon, authenticated;
-grant execute on function public.lightshow_add_task(text, text, text, uuid)          to anon, authenticated;
-grant execute on function public.lightshow_set_task(text, uuid, boolean, text)       to anon, authenticated;
-grant execute on function public.lightshow_delete_task(text, uuid, text)             to anon, authenticated;
+grant execute on function public.lightshow_state()                                   to anonymous, authenticated;
+grant execute on function public.lightshow_check_code(text)                          to anonymous, authenticated;
+grant execute on function public.lightshow_set_stage(text, text, text, boolean, text) to anonymous, authenticated;
+grant execute on function public.lightshow_set_note(text, text, text, text)          to anonymous, authenticated;
+grant execute on function public.lightshow_add_task(text, text, text, uuid)          to anonymous, authenticated;
+grant execute on function public.lightshow_set_task(text, uuid, boolean, text)       to anonymous, authenticated;
+grant execute on function public.lightshow_delete_task(text, uuid, text)             to anonymous, authenticated;
 
 -- Tell PostgREST about changed function signatures right away.
 notify pgrst, 'reload schema';
